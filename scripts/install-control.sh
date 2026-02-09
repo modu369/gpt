@@ -32,9 +32,6 @@ sudo "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
 if [ ! -f /root/.acme.sh/acme.sh ]; then
   curl -fsSL https://get.acme.sh | sudo sh
-  if [ -f /root/.acme.sh/acme.sh ]; then
-    sudo /root/.acme.sh/acme.sh --install --force
-  fi
 fi
 
 sudo tee /etc/systemd/system/cf-relay-control.service > /dev/null <<SERVICE
