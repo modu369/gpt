@@ -400,9 +400,6 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
     if not acme_sh:
         log_cert_event(domain, method, "pending", "等待配置 acme.sh")
         return "pending", None, None, None, "等待配置 acme.sh"
-    if method == "dns-01" and not ACME_DNS_PROVIDER:
-        log_cert_event(domain, method, "pending", "缺少 ACME_DNS_PROVIDER 配置")
-        return "pending", None, None, None, "缺少 ACME_DNS_PROVIDER 配置"
     log_cert_event(domain, method, "applying", "开始申请")
     issue_cmd = [
         acme_sh,
@@ -413,7 +410,8 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
         "ec-256",
     ]
     if method == "dns-01":
-        issue_cmd += ["--dns", ACME_DNS_PROVIDER]
+        dns_provider = get_acme_dns_provider()
+        issue_cmd += ["--dns", dns_provider or "dns_manual", "--yes-I-know-dns-manual-mode-enough-go-ahead"]
     else:
         issue_cmd.append("--standalone")
     result = subprocess.run(issue_cmd, capture_output=True, text=True, check=False)
@@ -455,16 +453,11 @@ def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
         return False, message
     method = normalize_cert_method(method)
     if method == "dns-01":
-        dns_provider = get_acme_dns_provider()
-        if not dns_provider:
-            message = "请先在设置页配置 ACME_DNS_PROVIDER"
-            log_cert_event(domain, method, "pending", message)
-            return False, message
         cmd = [
             acme_sh,
             "--issue",
             "--dns",
-            dns_provider,
+            get_acme_dns_provider() or "dns_manual",
             "--yes-I-know-dns-manual-mode-enough-go-ahead",
             "-d",
             domain,
@@ -490,16 +483,11 @@ def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, s
         return "pending", None, None, None, message
     method = normalize_cert_method(method)
     if method == "dns-01":
-        dns_provider = get_acme_dns_provider()
-        if not dns_provider:
-            message = "请先在设置页配置 ACME_DNS_PROVIDER"
-            log_cert_event(domain, method, "pending", message)
-            return "pending", None, None, None, message
         cmd = [
             acme_sh,
             "--renew",
             "--dns",
-            dns_provider,
+            get_acme_dns_provider() or "dns_manual",
             "--yes-I-know-dns-manual-mode-enough-go-ahead",
             "-d",
             domain,
