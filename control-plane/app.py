@@ -346,7 +346,7 @@ def get_agent_ips() -> list[str]:
 
 def local_domain_check(domain: str, agent_ips: list[str]) -> bool:
     if not agent_ips:
-        return False
+        return True
     for _ in range(max(CERT_LOCAL_CHECK_ATTEMPTS, 1)):
         resolved = resolve_domain_ips(domain)
         if any(ip in agent_ips for ip in resolved):
