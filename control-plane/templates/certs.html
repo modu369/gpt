@@ -124,22 +124,34 @@
                   <details class="modal">
                     <summary>获取验证信息</summary>
                     <form method="post" action="{{ scoped_url('retry_cert', cert_id=cert.id) }}" class="stack">
-                      <p class="hint">系统会生成验证信息，请在日志中查看。</p>
+                      <p class="hint">系统会生成验证信息并显示在此处。</p>
+                      {% if cert.last_error %}
+                      <pre class="log-box">{{ cert.last_error }}</pre>
+                      {% endif %}
                       <button type="submit">生成验证信息</button>
+                      <button type="button" class="secondary" onclick="this.closest('details').removeAttribute('open')">关闭</button>
                     </form>
                   </details>
                   <details class="modal">
                     <summary>DNS 验证信息</summary>
                     <form method="post" action="{{ scoped_url('retry_cert_dns', cert_id=cert.id) }}" class="stack">
                       <p class="hint">支持通配符域名，需要配置 ACME_DNS_PROVIDER。</p>
+                      {% if cert.last_error %}
+                      <pre class="log-box">{{ cert.last_error }}</pre>
+                      {% endif %}
                       <button type="submit" class="secondary">生成 DNS 信息</button>
+                      <button type="button" class="secondary" onclick="this.closest('details').removeAttribute('open')">关闭</button>
                     </form>
                   </details>
                   <details class="modal">
                     <summary>验证</summary>
                     <form method="post" action="{{ scoped_url('verify_cert', cert_id=cert.id) }}" class="stack">
                       <p class="hint">完成配置后点击验证，将进行官方校验并下发证书。</p>
+                      {% if cert.last_error %}
+                      <pre class="log-box">{{ cert.last_error }}</pre>
+                      {% endif %}
                       <button type="submit">开始验证</button>
+                      <button type="button" class="secondary" onclick="this.closest('details').removeAttribute('open')">关闭</button>
                     </form>
                   </details>
                   <form method="post" action="{{ scoped_url('delete_cert', cert_id=cert.id) }}">

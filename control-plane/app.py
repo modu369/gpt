@@ -461,8 +461,9 @@ def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
         message = output.strip() or "获取验证信息失败"
         log_cert_event(domain, method, "failed", message)
         return False, message
-    log_cert_event(domain, method, "pending", output.strip() or "请按提示完成验证")
-    return True, output.strip() or "请按提示完成验证"
+    info = output.strip() or "请按提示完成验证"
+    log_cert_event(domain, method, "pending", info)
+    return True, info
 
 
 def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, str | None, str | None, str | None]:
@@ -1056,8 +1057,9 @@ def retry_cert(cert_id: int, access_key: str | None = None):
         log_cert_event(cert["domain"], cert["method"], "failed", "本地校验失败")
         upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "本地校验失败")
         return redirect(scoped_url("certs"))
-    upsert_cert_record(cert["domain"], cert["method"], "pending", None, None, None, None)
-    run_acme_manual_issue(cert["domain"], cert["method"])
+    success, info = run_acme_manual_issue(cert["domain"], cert["method"])
+    status = "pending" if success else "failed"
+    upsert_cert_record(cert["domain"], cert["method"], status, None, None, None, info)
     return redirect(scoped_url("certs"))
 
 
@@ -1071,8 +1073,9 @@ def retry_cert_dns(cert_id: int, access_key: str | None = None):
     cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
     if cert is None:
         return redirect(scoped_url("certs"))
-    upsert_cert_record(cert["domain"], "dns-01", "pending", None, None, None, None)
-    run_acme_manual_issue(cert["domain"], "dns-01")
+    success, info = run_acme_manual_issue(cert["domain"], "dns-01")
+    status = "pending" if success else "failed"
+    upsert_cert_record(cert["domain"], "dns-01", status, None, None, None, info)
     return redirect(scoped_url("certs"))
 
 
@@ -1114,8 +1117,9 @@ def auto_issue_cert(access_key: str | None = None):
             log_cert_event(domain, method, "failed", "本地校验失败")
             upsert_cert_record(domain, method, "failed", None, None, None, "本地校验失败")
             return redirect(scoped_url("certs"))
-    upsert_cert_record(domain, method, "pending", None, None, None, None)
-    run_acme_manual_issue(domain, method)
+    success, info = run_acme_manual_issue(domain, method)
+    status = "pending" if success else "failed"
+    upsert_cert_record(domain, method, status, None, None, None, info)
     return redirect(scoped_url("certs"))
 
 
