@@ -202,6 +202,16 @@ def get_settings(keys: Iterable[str]) -> dict[str, str]:
     return {key: existing.get(key, "") for key in keys}
 
 
+def get_acme_sh_path() -> str:
+    value = get_setting("acme_sh_path", "") or ""
+    return value.strip() or ACME_SH_PATH
+
+
+def get_acme_dns_provider() -> str:
+    value = get_setting("acme_dns_provider", "") or ""
+    return value.strip() or ACME_DNS_PROVIDER
+
+
 def normalize_access_path(value: str) -> str:
     cleaned = value.strip().strip("/")
     return cleaned
@@ -356,8 +366,9 @@ def local_domain_check(domain: str, agent_ips: list[str]) -> bool:
 
 
 def find_acme_sh() -> str | None:
-    if ACME_SH_PATH:
-        path = Path(ACME_SH_PATH)
+    configured = get_acme_sh_path()
+    if configured:
+        path = Path(configured)
         if path.exists():
             return str(path)
     candidates = [
@@ -444,11 +455,16 @@ def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
         return False, message
     method = normalize_cert_method(method)
     if method == "dns-01":
+        dns_provider = get_acme_dns_provider()
+        if not dns_provider:
+            message = "请先在设置页配置 ACME_DNS_PROVIDER"
+            log_cert_event(domain, method, "pending", message)
+            return False, message
         cmd = [
             acme_sh,
             "--issue",
             "--dns",
-            ACME_DNS_PROVIDER,
+            dns_provider,
             "--yes-I-know-dns-manual-mode-enough-go-ahead",
             "-d",
             domain,
@@ -474,11 +490,16 @@ def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, s
         return "pending", None, None, None, message
     method = normalize_cert_method(method)
     if method == "dns-01":
+        dns_provider = get_acme_dns_provider()
+        if not dns_provider:
+            message = "请先在设置页配置 ACME_DNS_PROVIDER"
+            log_cert_event(domain, method, "pending", message)
+            return "pending", None, None, None, message
         cmd = [
             acme_sh,
             "--renew",
             "--dns",
-            ACME_DNS_PROVIDER,
+            dns_provider,
             "--yes-I-know-dns-manual-mode-enough-go-ahead",
             "-d",
             domain,
@@ -921,6 +942,12 @@ def settings(access_key: str | None = None):
             "dns_auth_token",
         ]
     )
+    acme_settings = get_settings(
+        [
+            "acme_sh_path",
+            "acme_dns_provider",
+        ]
+    )
     return render_template(
         "settings.html",
         domains=domains,
@@ -929,6 +956,7 @@ def settings(access_key: str | None = None):
         access_path=access_path,
         access_port=access_port,
         dns_settings=dns_settings,
+        acme_settings=acme_settings,
     )
 
 
@@ -1188,6 +1216,27 @@ def update_dns_settings(access_key: str | None = None):
     set_setting("dns_record_name", request.form.get("dns_record_name", "").strip())
     set_setting("dns_record_type", request.form.get("dns_record_type", "").strip() or "A")
     set_setting("dns_auth_token", request.form.get("dns_auth_token", "").strip())
+    return redirect(scoped_url("settings"))
+
+
+def install_acme_sh() -> None:
+    if find_acme_sh():
+        return
+    subprocess.run(
+        ["bash", "-c", "curl -fsSL https://get.acme.sh | sh"],
+        check=False,
+    )
+
+
+@app.route("/settings/acme", methods=["POST"])
+@app.route("/<access_key>/settings/acme", methods=["POST"])
+def update_acme_settings(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    set_setting("acme_sh_path", request.form.get("acme_sh_path", "").strip())
+    set_setting("acme_dns_provider", request.form.get("acme_dns_provider", "").strip())
+    install_acme_sh()
     return redirect(scoped_url("settings"))
 
 

@@ -134,6 +134,22 @@
           </form>
           <p class="hint">系统会按节点负载实时更新权重，其他域名可 CNAME 到该记录。</p>
         </div>
+
+        <div class="card">
+          <h2>ACME 证书配置</h2>
+          <form method="post" action="{{ scoped_url('update_acme_settings') }}" class="stack">
+            <label>
+              acme.sh 路径（可选）
+              <input type="text" name="acme_sh_path" placeholder="/root/.acme.sh/acme.sh" value="{{ acme_settings.acme_sh_path }}" />
+            </label>
+            <label>
+              ACME_DNS_PROVIDER（DNS 验证必填）
+              <input type="text" name="acme_dns_provider" placeholder="dns_cf" value="{{ acme_settings.acme_dns_provider }}" />
+            </label>
+            <button type="submit">保存并安装 acme.sh</button>
+          </form>
+          <p class="hint">保存后会自动安装 acme.sh。DNS 验证需配置对应的 provider 环境。</p>
+        </div>
       </section>
     </div>
   </body>
