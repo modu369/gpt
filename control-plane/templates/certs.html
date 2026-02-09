@@ -18,7 +18,7 @@
 
       <section class="card">
         <h2>新增证书记录</h2>
-        <p class="hint">默认使用验证最快的 HTTP-01。若未验证通过，域名不会下发到被控端进行转发。</p>
+        <p class="hint">默认使用验证最快的 HTTP-01。若未验证通过，域名不会下发到被控端进行转发；系统会在域名解析到节点 IP 后自动尝试申请。</p>
         <form method="post" action="{{ scoped_url('add_cert') }}" class="stack">
           <label>
             域名
@@ -112,8 +112,24 @@
                     <button type="submit">更新</button>
                   </div>
                 </form>
-                <form method="post" action="{{ scoped_url('delete_cert', cert_id=cert.id) }}">
-                  <button type="submit" class="secondary">删除</button>
+                <div class="inline-form">
+                  <form method="post" action="{{ scoped_url('retry_cert', cert_id=cert.id) }}">
+                    <button type="submit">重试</button>
+                  </form>
+                  <form method="post" action="{{ scoped_url('delete_cert', cert_id=cert.id) }}">
+                    <button type="submit" class="secondary">删除</button>
+                  </form>
+                </div>
+                <form method="post" action="{{ scoped_url('upload_cert', cert_id=cert.id) }}" enctype="multipart/form-data" class="stack">
+                  <label>
+                    证书文件
+                    <input type="file" name="cert_file" required />
+                  </label>
+                  <label>
+                    私钥文件
+                    <input type="file" name="key_file" required />
+                  </label>
+                  <button type="submit" class="secondary">上传证书</button>
                 </form>
               </td>
             </tr>
