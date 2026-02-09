@@ -1223,7 +1223,7 @@ def install_acme_sh() -> None:
     if find_acme_sh():
         return
     subprocess.run(
-        ["bash", "-c", "curl -fsSL https://get.acme.sh | sh"],
+        ["bash", "-c", "curl -fsSL https://get.acme.sh | sh -s -- --install --force"],
         check=False,
     )
 

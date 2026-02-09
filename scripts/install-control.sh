@@ -8,7 +8,7 @@ REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
 REPO_REF="${REPO_REF:-codex/fix-cloudflare_http-socket-error}"
 
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip git curl
+sudo apt-get install -y python3 python3-venv python3-pip git curl cron
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -31,7 +31,7 @@ sudo "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
 sudo "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
 if [ ! -f /root/.acme.sh/acme.sh ]; then
-  curl -fsSL https://get.acme.sh | sudo bash
+  curl -fsSL https://get.acme.sh | sudo bash -s -- --install --force
 fi
 
 sudo tee /etc/systemd/system/cf-relay-control.service > /dev/null <<SERVICE
