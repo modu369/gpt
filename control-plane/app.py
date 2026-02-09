@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import os
 import secrets
+import socket as net_socket
 import sqlite3
-from datetime import datetime
+import subprocess
+import time
+from datetime import datetime, timedelta
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse, urlunparse
@@ -24,6 +28,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "control.db"
+CERT_STORAGE_DIR = Path(os.getenv("CERT_STORAGE_DIR", str(BASE_DIR / "certs")))
+CERT_LOG_PATH = Path(os.getenv("CERT_LOG_PATH", str(CERT_STORAGE_DIR / "cert.log")))
 
 DEFAULT_ADMIN_USER = os.getenv("CONTROL_ADMIN_USER", "admin")
 DEFAULT_ADMIN_PASS = os.getenv("CONTROL_ADMIN_PASS", "admin123")
@@ -31,7 +37,7 @@ SECRET_KEY = os.getenv("CONTROL_SECRET_KEY", secrets.token_hex(16))
 DEFAULT_ACCESS_PATH = os.getenv("CONTROL_ACCESS_PATH", "yun123")
 SCRIPT_BASE_URL = os.getenv(
     "SCRIPT_BASE_URL",
-    "https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system-6h0ek0/scripts",
+    "https://raw.githubusercontent.com/modu369/gpt/codex/fix-cloudflare_http-socket-error/scripts",
 )
 REPO_URL = os.getenv(
     "REPO_URL",
@@ -39,8 +45,13 @@ REPO_URL = os.getenv(
 )
 REPO_REF = os.getenv(
     "REPO_REF",
-    "codex/develop-high-performance-cloudflare-proxy-system-6h0ek0",
+    "codex/fix-cloudflare_http-socket-error",
 )
+CERT_ATTEMPT_INTERVAL_SEC = int(os.getenv("CERT_ATTEMPT_INTERVAL_SEC", "300"))
+CERT_LOCAL_CHECK_ATTEMPTS = int(os.getenv("CERT_LOCAL_CHECK_ATTEMPTS", "3"))
+CERT_LOCAL_CHECK_DELAY_SEC = float(os.getenv("CERT_LOCAL_CHECK_DELAY_SEC", "1.0"))
+ACME_SH_PATH = os.getenv("ACME_SH_PATH", "")
+ACME_DNS_PROVIDER = os.getenv("ACME_DNS_PROVIDER", "")
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -63,6 +74,8 @@ def close_db(exception: Exception | None) -> None:
 
 def init_db() -> None:
     db = get_db()
+    CERT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    CERT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -81,6 +94,18 @@ def init_db() -> None:
             ip TEXT UNIQUE NOT NULL,
             weight INTEGER NOT NULL DEFAULT 100,
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS certs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT UNIQUE NOT NULL,
+            method TEXT NOT NULL,
+            status TEXT NOT NULL,
+            issued_at TEXT,
+            expires_at TEXT,
+            renew_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS agents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +172,7 @@ def init_db() -> None:
         set_setting("control_port", os.getenv("CONTROL_PORT", "8080"))
     if get_setting("access_path") is None:
         set_setting("access_path", DEFAULT_ACCESS_PATH)
+    ensure_cert_records()
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
@@ -174,6 +200,21 @@ def get_settings(keys: Iterable[str]) -> dict[str, str]:
     ).fetchall()
     existing = {row["key"]: row["value"] for row in rows}
     return {key: existing.get(key, "") for key in keys}
+
+
+def get_acme_sh_path() -> str:
+    value = get_setting("acme_sh_path", "") or ""
+    return value.strip() or ACME_SH_PATH
+
+
+def get_acme_dns_provider() -> str:
+    value = get_setting("acme_dns_provider", "") or ""
+    return value.strip() or ACME_DNS_PROVIDER
+
+
+def get_acme_account_email() -> str:
+    value = get_setting("acme_account_email", "") or ""
+    return value.strip()
 
 
 def normalize_access_path(value: str) -> str:
@@ -244,6 +285,336 @@ def get_agent_value(agent: sqlite3.Row, key: str) -> object | None:
     if key in agent.keys():
         return agent[key]
     return None
+
+
+def normalize_cert_method(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned in {"http-01", "dns-01", "passthrough"}:
+        return cleaned
+    return "http-01"
+
+
+def normalize_cert_status(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned in {"pending", "issued", "failed", "renewing", "applying"}:
+        return cleaned
+    return "pending"
+
+
+def ensure_cert_records() -> None:
+    db = get_db()
+    domains = db.execute("SELECT domain FROM domains").fetchall()
+    existing = {
+        row["domain"]
+        for row in db.execute("SELECT domain FROM certs").fetchall()
+    }
+    now = datetime.utcnow().isoformat()
+    for row in domains:
+        domain = row["domain"]
+        if domain in existing:
+            continue
+        db.execute(
+            """
+            INSERT INTO certs (domain, method, status, issued_at, expires_at, renew_at, last_error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (domain, "http-01", "pending", None, None, None, None, now, now),
+        )
+    db.commit()
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def log_cert_event(domain: str, method: str, status: str, message: str | None = None) -> None:
+    timestamp = datetime.utcnow().isoformat()
+    line = f"{timestamp} | {domain} | {method} | {status}"
+    if message:
+        line = f"{line} | {message}"
+    with CERT_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def resolve_domain_ips(domain: str) -> list[str]:
+    try:
+        results = net_socket.getaddrinfo(domain, None, proto=net_socket.IPPROTO_TCP)
+    except net_socket.gaierror:
+        return []
+    ips = []
+    for result in results:
+        address = result[4][0]
+        if address not in ips:
+            ips.append(address)
+    return ips
+
+
+def get_agent_ips() -> list[str]:
+    rows = get_db().execute("SELECT agent_ip FROM agents").fetchall()
+    return [row["agent_ip"].strip() for row in rows if row["agent_ip"] and row["agent_ip"].strip()]
+
+
+def local_domain_check(domain: str, agent_ips: list[str]) -> bool:
+    if not agent_ips:
+        return True
+    for _ in range(max(CERT_LOCAL_CHECK_ATTEMPTS, 1)):
+        resolved = resolve_domain_ips(domain)
+        if any(ip in agent_ips for ip in resolved):
+            return True
+        time.sleep(CERT_LOCAL_CHECK_DELAY_SEC)
+    return False
+
+
+def find_acme_sh() -> str | None:
+    configured = get_acme_sh_path()
+    if configured:
+        path = Path(configured)
+        if path.exists():
+            return str(path)
+    candidates = [
+        Path.home() / ".acme.sh" / "acme.sh",
+        Path("/root/.acme.sh/acme.sh"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def configure_acme_sh(acme_sh: str) -> None:
+    subprocess.run(
+        [acme_sh, "--set-default-ca", "--server", "letsencrypt"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    email = get_acme_account_email()
+    if email:
+        subprocess.run(
+            [acme_sh, "--register-account", "-m", email],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+def should_attempt_cert(cert: sqlite3.Row) -> bool:
+    status = (cert["status"] or "").strip().lower()
+    if status in {"issued", "renewing", "applying"}:
+        return False
+    updated_at = parse_iso_datetime(cert["updated_at"])
+    if updated_at:
+        if (datetime.utcnow() - updated_at).total_seconds() < CERT_ATTEMPT_INTERVAL_SEC:
+            return False
+    return True
+
+
+def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str | None, str | None, str | None]:
+    method = normalize_cert_method(method)
+    if method == "passthrough":
+        return "issued", None, None, None, None
+    acme_sh = find_acme_sh()
+    if not acme_sh:
+        log_cert_event(domain, method, "pending", "等待配置 acme.sh")
+        return "pending", None, None, None, "等待配置 acme.sh"
+    configure_acme_sh(acme_sh)
+    log_cert_event(domain, method, "applying", "开始申请")
+    issue_cmd = [
+        acme_sh,
+        "--issue",
+        "-d",
+        domain,
+        "--keylength",
+        "ec-256",
+    ]
+    if method == "dns-01":
+        dns_provider = get_acme_dns_provider()
+        issue_cmd += ["--dns", dns_provider or "dns_manual"]
+    else:
+        issue_cmd.append("--standalone")
+    result = subprocess.run(issue_cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout).strip() or "申请失败"
+        log_cert_event(domain, method, "failed", message)
+        return "failed", None, None, None, message
+    install_dir = CERT_STORAGE_DIR / domain
+    install_dir.mkdir(parents=True, exist_ok=True)
+    fullchain = install_dir / "fullchain.pem"
+    keyfile = install_dir / "privkey.pem"
+    install_cmd = [
+        acme_sh,
+        "--install-cert",
+        "-d",
+        domain,
+        "--fullchain-file",
+        str(fullchain),
+        "--key-file",
+        str(keyfile),
+    ]
+    install_result = subprocess.run(install_cmd, capture_output=True, text=True, check=False)
+    if install_result.returncode != 0:
+        message = (install_result.stderr or install_result.stdout).strip() or "安装失败"
+        log_cert_event(domain, method, "failed", message)
+        return "failed", None, None, None, message
+    issued_at = datetime.utcnow().isoformat()
+    expires_at = None
+    renew_at = None
+    log_cert_event(domain, method, "issued", "申请成功")
+    return "issued", issued_at, expires_at, renew_at, None
+
+
+def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
+    acme_sh = find_acme_sh()
+    if not acme_sh:
+        message = "等待配置 acme.sh"
+        log_cert_event(domain, method, "pending", message)
+        return False, message
+    configure_acme_sh(acme_sh)
+    method = normalize_cert_method(method)
+    if method == "dns-01":
+        cmd = [
+            acme_sh,
+            "--issue",
+            "--dns",
+            get_acme_dns_provider() or "dns_manual",
+            "-d",
+            domain,
+        ]
+    else:
+        cmd = [acme_sh, "--issue", "--manual", "-d", domain]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        message = output.strip() or "获取验证信息失败"
+        log_cert_event(domain, method, "failed", message)
+        return False, message
+    info = output.strip() or "请按提示完成验证"
+    log_cert_event(domain, method, "pending", info)
+    return True, info
+
+
+def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, str | None, str | None, str | None]:
+    acme_sh = find_acme_sh()
+    if not acme_sh:
+        message = "等待配置 acme.sh"
+        log_cert_event(domain, method, "pending", message)
+        return "pending", None, None, None, message
+    configure_acme_sh(acme_sh)
+    method = normalize_cert_method(method)
+    if method == "dns-01":
+        cmd = [
+            acme_sh,
+            "--renew",
+            "--dns",
+            get_acme_dns_provider() or "dns_manual",
+            "-d",
+            domain,
+            "--force",
+        ]
+    else:
+        cmd = [acme_sh, "--renew", "--manual", "-d", domain, "--force"]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        message = output.strip() or "验证失败"
+        log_cert_event(domain, method, "failed", message)
+        return "failed", None, None, None, message
+    log_cert_event(domain, method, "issued", output.strip() or "申请成功")
+    issued_at = datetime.utcnow().isoformat()
+    return "issued", issued_at, None, None, None
+
+
+def auto_issue_certs() -> None:
+    agent_ips = get_agent_ips()
+    if not agent_ips:
+        return
+    db = get_db()
+    cert_rows = db.execute("SELECT * FROM certs ORDER BY id DESC").fetchall()
+    if not cert_rows:
+        return
+    domain_whitelist = set(fetch_domains())
+    for cert in cert_rows:
+        domain = cert["domain"]
+        if domain_whitelist and domain not in domain_whitelist:
+            continue
+        if not should_attempt_cert(cert):
+            continue
+        if not local_domain_check(domain, agent_ips):
+            log_cert_event(domain, cert["method"], "failed", "本地校验失败")
+            continue
+        upsert_cert_record(domain, cert["method"], "applying", None, None, None, None)
+        status, issued_at, expires_at, renew_at, error = attempt_issue_cert(domain, cert["method"])
+        last_error = None if status == "issued" else (error or cert["last_error"] or "自动申请失败")
+        upsert_cert_record(domain, cert["method"], status, issued_at, expires_at, renew_at, last_error)
+
+
+def save_uploaded_cert(domain: str, cert_file: bytes, key_file: bytes) -> None:
+    target_dir = CERT_STORAGE_DIR / domain
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "fullchain.pem").write_bytes(cert_file)
+    (target_dir / "privkey.pem").write_bytes(key_file)
+
+
+def extract_cert_dates(cert_bytes: bytes) -> tuple[str | None, str | None, str | None]:
+    with NamedTemporaryFile(delete=True) as handle:
+        handle.write(cert_bytes)
+        handle.flush()
+        result = subprocess.run(
+            ["openssl", "x509", "-noout", "-dates", "-in", handle.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode != 0:
+        return None, None, None
+    issued_at = None
+    expires_at = None
+    for line in result.stdout.splitlines():
+        if line.startswith("notBefore="):
+            issued_at = line.split("=", 1)[1].strip()
+        if line.startswith("notAfter="):
+            expires_at = line.split("=", 1)[1].strip()
+    if not issued_at or not expires_at:
+        return None, None, None
+    try:
+        issued_dt = datetime.strptime(issued_at, "%b %d %H:%M:%S %Y %Z")
+        expires_dt = datetime.strptime(expires_at, "%b %d %H:%M:%S %Y %Z")
+    except ValueError:
+        return None, None, None
+    renew_dt = expires_dt - timedelta(days=30)
+    return issued_dt.isoformat(), expires_dt.isoformat(), renew_dt.isoformat()
+def upsert_cert_record(
+    domain: str,
+    method: str,
+    status: str,
+    issued_at: str | None = None,
+    expires_at: str | None = None,
+    renew_at: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+    db.execute(
+        """
+        INSERT INTO certs (domain, method, status, issued_at, expires_at, renew_at, last_error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(domain) DO UPDATE SET
+            method = excluded.method,
+            status = excluded.status,
+            issued_at = excluded.issued_at,
+            expires_at = excluded.expires_at,
+            renew_at = excluded.renew_at,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        """,
+        (domain, method, status, issued_at, expires_at, renew_at, last_error, now, now),
+    )
+    db.commit()
 
 
 def compute_saturation(agent: sqlite3.Row) -> tuple[bool, list[str]]:
@@ -470,11 +841,20 @@ def add_domain(access_key: str | None = None):
     domain = request.form.get("domain", "").strip()
     if domain:
         db = get_db()
-        db.execute(
+        result = db.execute(
             "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
             (domain, datetime.utcnow().isoformat()),
         )
         db.commit()
+        if result.rowcount:
+            upsert_cert_record(domain, "http-01", "pending")
+        else:
+            existing = db.execute(
+                "SELECT domain FROM certs WHERE domain = ?",
+                (domain,),
+            ).fetchone()
+            if existing is None:
+                upsert_cert_record(domain, "http-01", "pending")
     return redirect(scoped_url("settings"))
 
 
@@ -485,7 +865,10 @@ def delete_domain(domain_id: int, access_key: str | None = None):
     if not is_logged_in():
         return redirect(scoped_url("login"))
     db = get_db()
+    domain_row = db.execute("SELECT domain FROM domains WHERE id = ?", (domain_id,)).fetchone()
     db.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
+    if domain_row:
+        db.execute("DELETE FROM certs WHERE domain = ?", (domain_row["domain"],))
     db.commit()
     return redirect(scoped_url("settings"))
 
@@ -570,6 +953,13 @@ def settings(access_key: str | None = None):
             "dns_auth_token",
         ]
     )
+    acme_settings = get_settings(
+        [
+            "acme_sh_path",
+            "acme_dns_provider",
+            "acme_account_email",
+        ]
+    )
     return render_template(
         "settings.html",
         domains=domains,
@@ -578,7 +968,234 @@ def settings(access_key: str | None = None):
         access_path=access_path,
         access_port=access_port,
         dns_settings=dns_settings,
+        acme_settings=acme_settings,
     )
+
+
+@app.route("/certs", methods=["GET"])
+@app.route("/<access_key>/certs", methods=["GET"])
+def certs(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    status_filter = request.args.get("status", "").strip().lower() or None
+    if status_filter:
+        status_filter = normalize_cert_status(status_filter)
+    cert_rows = fetch_certs(status_filter)
+    domains = fetch_domains()
+    return render_template(
+        "certs.html",
+        certs=cert_rows,
+        domains=domains,
+        status_filter=status_filter or "",
+    )
+
+
+@app.route("/certs/logs", methods=["GET"])
+@app.route("/<access_key>/certs/logs", methods=["GET"])
+def cert_logs(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    logs = read_cert_logs()
+    return render_template("cert_logs.html", logs=logs)
+
+
+@app.route("/certs/logs/clear", methods=["POST"])
+@app.route("/<access_key>/certs/logs/clear", methods=["POST"])
+def clear_cert_logs(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    CERT_LOG_PATH.write_text("", encoding="utf-8")
+    return redirect(scoped_url("cert_logs"))
+
+
+@app.route("/certs", methods=["POST"])
+@app.route("/<access_key>/certs", methods=["POST"])
+def add_cert(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    domain = request.form.get("domain", "").strip()
+    method = normalize_cert_method(request.form.get("method", "http-01"))
+    status = normalize_cert_status(request.form.get("status", "pending"))
+    issued_at = request.form.get("issued_at", "").strip() or None
+    expires_at = request.form.get("expires_at", "").strip() or None
+    renew_at = request.form.get("renew_at", "").strip() or None
+    last_error = request.form.get("last_error", "").strip() or None
+    if domain:
+        db = get_db()
+        db.execute(
+            "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
+            (domain, datetime.utcnow().isoformat()),
+        )
+        db.commit()
+        upsert_cert_record(domain, method, status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/add-existing", methods=["POST"])
+@app.route("/<access_key>/certs/add-existing", methods=["POST"])
+def add_existing_cert(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    domain = request.form.get("domain", "").strip()
+    cert_text = request.form.get("cert_text", "").strip()
+    key_text = request.form.get("key_text", "").strip()
+    if not (domain and cert_text and key_text):
+        return redirect(scoped_url("certs"))
+    db = get_db()
+    db.execute(
+        "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
+        (domain, datetime.utcnow().isoformat()),
+    )
+    db.commit()
+    cert_bytes = cert_text.encode("utf-8")
+    key_bytes = key_text.encode("utf-8")
+    save_uploaded_cert(domain, cert_bytes, key_bytes)
+    issued_at, expires_at, renew_at = extract_cert_dates(cert_bytes)
+    upsert_cert_record(domain, "passthrough", "issued", issued_at, expires_at, renew_at, None)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/update", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/update", methods=["POST"])
+def update_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    method = normalize_cert_method(request.form.get("method", cert["method"]))
+    status = normalize_cert_status(request.form.get("status", cert["status"]))
+    issued_at = request.form.get("issued_at", "").strip() or None
+    expires_at = request.form.get("expires_at", "").strip() or None
+    renew_at = request.form.get("renew_at", "").strip() or None
+    last_error = request.form.get("last_error", "").strip() or None
+    if status == "issued":
+        last_error = None
+    upsert_cert_record(cert["domain"], method, status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/retry", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/retry", methods=["POST"])
+def retry_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    agent_ips = get_agent_ips()
+    if not local_domain_check(cert["domain"], agent_ips):
+        log_cert_event(cert["domain"], cert["method"], "failed", "本地校验失败")
+        upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "本地校验失败")
+        return redirect(scoped_url("certs"))
+    success, info = run_acme_manual_issue(cert["domain"], cert["method"])
+    status = "pending" if success else "failed"
+    upsert_cert_record(cert["domain"], cert["method"], status, None, None, None, info)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/dns", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/dns", methods=["POST"])
+def retry_cert_dns(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    success, info = run_acme_manual_issue(cert["domain"], "dns-01")
+    status = "pending" if success else "failed"
+    upsert_cert_record(cert["domain"], "dns-01", status, None, None, None, info)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/verify", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/verify", methods=["POST"])
+def verify_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    status, issued_at, expires_at, renew_at, error = run_acme_manual_verify(cert["domain"], cert["method"])
+    last_error = None if status == "issued" else (error or "验证失败")
+    upsert_cert_record(cert["domain"], cert["method"], status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/auto-issue", methods=["POST"])
+@app.route("/<access_key>/certs/auto-issue", methods=["POST"])
+def auto_issue_cert(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    domain = request.form.get("domain", "").strip()
+    method = normalize_cert_method(request.form.get("method", "http-01"))
+    if not domain:
+        return redirect(scoped_url("certs"))
+    db = get_db()
+    db.execute(
+        "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
+        (domain, datetime.utcnow().isoformat()),
+    )
+    db.commit()
+    if method != "dns-01":
+        agent_ips = get_agent_ips()
+        if not local_domain_check(domain, agent_ips):
+            log_cert_event(domain, method, "failed", "本地校验失败")
+            upsert_cert_record(domain, method, "failed", None, None, None, "本地校验失败")
+            return redirect(scoped_url("certs"))
+    success, info = run_acme_manual_issue(domain, method)
+    status = "pending" if success else "failed"
+    upsert_cert_record(domain, method, status, None, None, None, info)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/upload", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/upload", methods=["POST"])
+def upload_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    cert_file = request.files.get("cert_file")
+    key_file = request.files.get("key_file")
+    if not cert_file or not key_file:
+        upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "缺少证书或私钥")
+        return redirect(scoped_url("certs"))
+    cert_bytes = cert_file.read()
+    key_bytes = key_file.read()
+    save_uploaded_cert(cert["domain"], cert_bytes, key_bytes)
+    issued_at, expires_at, renew_at = extract_cert_dates(cert_bytes)
+    upsert_cert_record(cert["domain"], "passthrough", "issued", issued_at, expires_at, renew_at, None)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/delete", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/delete", methods=["POST"])
+def delete_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    db.execute("DELETE FROM certs WHERE id = ?", (cert_id,))
+    db.commit()
+    return redirect(scoped_url("certs"))
 
 
 @app.route("/settings/access", methods=["POST"])
@@ -611,6 +1228,28 @@ def update_dns_settings(access_key: str | None = None):
     set_setting("dns_record_name", request.form.get("dns_record_name", "").strip())
     set_setting("dns_record_type", request.form.get("dns_record_type", "").strip() or "A")
     set_setting("dns_auth_token", request.form.get("dns_auth_token", "").strip())
+    return redirect(scoped_url("settings"))
+
+
+def install_acme_sh() -> None:
+    if find_acme_sh():
+        return
+    subprocess.run(
+        ["bash", "-c", "curl -fsSL https://get.acme.sh | sh"],
+        check=False,
+    )
+
+
+@app.route("/settings/acme", methods=["POST"])
+@app.route("/<access_key>/settings/acme", methods=["POST"])
+def update_acme_settings(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    set_setting("acme_sh_path", request.form.get("acme_sh_path", "").strip())
+    set_setting("acme_dns_provider", request.form.get("acme_dns_provider", "").strip())
+    set_setting("acme_account_email", request.form.get("acme_account_email", "").strip())
+    install_acme_sh()
     return redirect(scoped_url("settings"))
 
 
@@ -670,6 +1309,44 @@ def fetch_domains() -> Iterable[str]:
     return [row["domain"] for row in rows]
 
 
+def fetch_allowed_domains() -> Iterable[str]:
+    rows = get_db().execute(
+        """
+        SELECT domains.domain AS domain,
+               certs.method AS method,
+               certs.status AS status
+        FROM domains
+        LEFT JOIN certs ON certs.domain = domains.domain
+        """
+    ).fetchall()
+    allowed = []
+    for row in rows:
+        method = (row["method"] or "").strip().lower()
+        status = (row["status"] or "").strip().lower()
+        if method in {"http-01", "dns-01"} and status != "issued":
+            continue
+        allowed.append(row["domain"])
+    return allowed
+
+
+def fetch_certs(status_filter: str | None = None) -> Iterable[sqlite3.Row]:
+    db = get_db()
+    if status_filter:
+        return db.execute(
+            "SELECT * FROM certs WHERE status = ? ORDER BY updated_at DESC, id DESC",
+            (status_filter,),
+        ).fetchall()
+    return db.execute("SELECT * FROM certs ORDER BY updated_at DESC, id DESC").fetchall()
+
+
+def read_cert_logs(limit: int = 200) -> list[str]:
+    if not CERT_LOG_PATH.exists():
+        return []
+    with CERT_LOG_PATH.open("r", encoding="utf-8") as handle:
+        lines = handle.readlines()
+    return [line.rstrip("\n") for line in lines[-limit:]]
+
+
 def fetch_cf_ips() -> Iterable[dict]:
     rows = get_db().execute("SELECT ip, weight FROM cf_ips").fetchall()
     return [{"ip": row["ip"], "weight": row["weight"]} for row in rows]
@@ -689,7 +1366,7 @@ def api_config():
     db.commit()
     return jsonify(
         {
-            "domains": list(fetch_domains()),
+            "domains": list(fetch_allowed_domains()),
             "cf_ips": list(fetch_cf_ips()),
         }
     )

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>证书管理</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>证书管理</h1>
+        <div class="nav">
+          <a class="settings-link" href="{{ scoped_url('dashboard') }}">返回控制台</a>
+          <a class="settings-link" href="{{ scoped_url('settings') }}">设置</a>
+          <a class="settings-link" href="{{ scoped_url('cert_logs') }}">查看日志</a>
+          <a class="logout" href="{{ scoped_url('logout') }}">退出</a>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>证书操作</h2>
+        <div class="inline-form">
+          <details>
+            <summary class="secondary">手动申请证书</summary>
+            <form method="post" action="{{ scoped_url('auto_issue_cert') }}" class="stack">
+              <label>
+                域名（支持通配符）
+                <input type="text" name="domain" placeholder="example.com 或 *.example.com" required />
+              </label>
+              <label>
+                验证方式
+                <select name="method">
+                  <option value="http-01">HTTP-01（文件验证）</option>
+                  <option value="dns-01">DNS-01（支持通配符）</option>
+                </select>
+              </label>
+              <button type="submit" class="secondary">开始申请</button>
+            </form>
+            <p class="hint">点击申请后会生成验证信息，请到“查看日志”获取配置内容，完成配置后在列表里点击“验证”。</p>
+          </details>
+          <details>
+            <summary class="secondary">已有证书添加</summary>
+            <form method="post" action="{{ scoped_url('add_existing_cert') }}" class="stack">
+              <label>
+                域名
+                <input type="text" name="domain" placeholder="example.com" required />
+              </label>
+              <label>
+                证书内容 (PEM)
+                <textarea name="cert_text" rows="6" placeholder="-----BEGIN CERTIFICATE-----" required></textarea>
+              </label>
+              <label>
+                私钥内容 (PEM)
+                <textarea name="key_text" rows="6" placeholder="-----BEGIN PRIVATE KEY-----" required></textarea>
+              </label>
+              <button type="submit" class="secondary">确认使用该证书</button>
+            </form>
+          </details>
+        </div>
+        <p class="hint">证书申请仅支持手动触发，可选择 HTTP-01 或 DNS-01（支持泛域名）。</p>
+      </section>
+
+      <section class="card">
+        <h2>证书列表</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>域名</th>
+              <th>验证方式</th>
+              <th>状态</th>
+              <th>申请时间</th>
+              <th>到期时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for cert in certs %}
+            <tr>
+              <td>{{ cert.domain }}</td>
+              <td>{{ cert.method }}</td>
+              <td>{{ cert.status }}</td>
+              <td>{{ cert.issued_at or '-' }}</td>
+              <td>{{ cert.expires_at or '-' }}</td>
+              <td>
+                <div class="inline-form">
+                  <details class="modal">
+                    <summary>修改</summary>
+                    <form method="post" action="{{ scoped_url('update_cert', cert_id=cert.id) }}" class="stack">
+                      <select name="method">
+                        <option value="http-01" {% if cert.method == 'http-01' %}selected{% endif %}>HTTP-01</option>
+                        <option value="dns-01" {% if cert.method == 'dns-01' %}selected{% endif %}>DNS-01</option>
+                        <option value="passthrough" {% if cert.method == 'passthrough' %}selected{% endif %}>直通</option>
+                      </select>
+                      <select name="status">
+                        <option value="pending" {% if cert.status == 'pending' %}selected{% endif %}>待验证</option>
+                        <option value="issued" {% if cert.status == 'issued' %}selected{% endif %}>已签发</option>
+                        <option value="renewing" {% if cert.status == 'renewing' %}selected{% endif %}>续签中</option>
+                        <option value="failed" {% if cert.status == 'failed' %}selected{% endif %}>失败</option>
+                        <option value="applying" {% if cert.status == 'applying' %}selected{% endif %}>正在申请</option>
+                      </select>
+                      <input type="text" name="issued_at" value="{{ cert.issued_at or '' }}" placeholder="申请时间" />
+                      <input type="text" name="expires_at" value="{{ cert.expires_at or '' }}" placeholder="到期时间" />
+                      <input type="text" name="renew_at" value="{{ cert.renew_at or '' }}" placeholder="自动续费时间" />
+                      <input type="text" name="last_error" value="{{ cert.last_error or '' }}" placeholder="失败原因" />
+                      <div class="inline-form">
+                        <button type="submit">确认</button>
+                      </div>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>上传证书</summary>
+                    <form method="post" action="{{ scoped_url('upload_cert', cert_id=cert.id) }}" enctype="multipart/form-data" class="stack">
+                      <label>
+                        证书文件
+                        <input type="file" name="cert_file" required />
+                      </label>
+                      <label>
+                        私钥文件
+                        <input type="file" name="key_file" required />
+                      </label>
+                      <button type="submit" class="secondary">确认上传</button>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>获取验证信息</summary>
+                    <form method="post" action="{{ scoped_url('retry_cert', cert_id=cert.id) }}" class="stack">
+                      <p class="hint">系统会生成验证信息并显示在此处。</p>
+                      {% if cert.last_error %}
+                      <pre class="log-box">{{ cert.last_error }}</pre>
+                      {% endif %}
+                      <button type="submit">生成验证信息</button>
+                      <button type="button" class="secondary" onclick="this.closest('details').removeAttribute('open')">关闭</button>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>DNS 验证信息</summary>
+                    <form method="post" action="{{ scoped_url('retry_cert_dns', cert_id=cert.id) }}" class="stack">
+                      <p class="hint">支持通配符域名，需要配置 ACME_DNS_PROVIDER。</p>
+                      {% if cert.last_error %}
+                      <pre class="log-box">{{ cert.last_error }}</pre>
+                      {% endif %}
+                      <button type="submit" class="secondary">生成 DNS 信息</button>
+                      <button type="button" class="secondary" onclick="this.closest('details').removeAttribute('open')">关闭</button>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>验证</summary>
+                    <form method="post" action="{{ scoped_url('verify_cert', cert_id=cert.id) }}" class="stack">
+                      <p class="hint">完成配置后点击验证，将进行官方校验并下发证书。</p>
+                      {% if cert.last_error %}
+                      <pre class="log-box">{{ cert.last_error }}</pre>
+                      {% endif %}
+                      <button type="submit">开始验证</button>
+                      <button type="button" class="secondary" onclick="this.closest('details').removeAttribute('open')">关闭</button>
+                    </form>
+                  </details>
+                  <form method="post" action="{{ scoped_url('delete_cert', cert_id=cert.id) }}">
+                    <button type="submit" class="secondary">删除</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="8" class="empty">暂无证书记录</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </body>
+</html>

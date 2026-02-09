@@ -4,7 +4,7 @@ set -euo pipefail
 CONTROL_URL=""
 TOKEN=""
 REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
-REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system-6h0ek0}"
+REPO_REF="${REPO_REF:-codex/fix-cloudflare_http-socket-error}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +44,9 @@ sudo mkdir -p /etc/haproxy/maps /etc/haproxy/certs
 sudo mkdir -p /run/haproxy
 sudo chown haproxy:haproxy /run/haproxy
 sudo chmod 755 /run/haproxy
+if [ -e /run/haproxy/admin.sock ] && [ ! -S /run/haproxy/admin.sock ]; then
+  sudo rm -rf /run/haproxy/admin.sock
+fi
 sudo touch /etc/haproxy/maps/domains.map
 if ! ls /etc/haproxy/certs/*.pem >/dev/null 2>&1; then
   sudo openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \

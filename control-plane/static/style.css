@@ -88,9 +88,11 @@ h1 {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-input {
+input,
+select {
   flex: 1;
   padding: 8px 10px;
   border-radius: 8px;
@@ -107,6 +109,16 @@ textarea {
   resize: vertical;
 }
 
+.log-box {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 16px;
+  border-radius: 10px;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 12px;
+}
+
 button {
   padding: 8px 12px;
   border: none;
@@ -118,6 +130,41 @@ button {
 
 button.secondary {
   background: #5f6b7a;
+}
+
+button {
+  transition: background 0.2s ease;
+}
+
+button:hover {
+  background: #1558b0;
+}
+
+button.secondary:hover {
+  background: #465164;
+}
+
+details {
+  border-radius: 8px;
+}
+
+details summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #1a73e8;
+  color: #fff;
+  display: inline-block;
+  font-size: 13px;
+}
+
+details summary.secondary {
+  background: #5f6b7a;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
 }
 
 .alert {
@@ -236,7 +283,7 @@ li:last-child {
   gap: 12px;
   flex-wrap: wrap;
   font-size: 12px;
-  color: #5f6b7a;
+  color: #ffffff;
   margin-top: 6px;
 }
 

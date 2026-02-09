@@ -5,10 +5,10 @@ INSTALL_DIR="/opt/cf-relay-control"
 CONTROL_PORT="${CONTROL_PORT:-8080}"
 CONTROL_ACCESS_PATH="${CONTROL_ACCESS_PATH:-yun123}"
 REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
-REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system-6h0ek0}"
+REPO_REF="${REPO_REF:-codex/fix-cloudflare_http-socket-error}"
 
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip git
+sudo apt-get install -y python3 python3-venv python3-pip git curl cron
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -29,6 +29,10 @@ sudo cp -r "$WORK_DIR/control-plane/"* "$INSTALL_DIR/"
 sudo python3 -m venv "$INSTALL_DIR/venv"
 sudo "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
 sudo "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+
+if [ ! -f /root/.acme.sh/acme.sh ]; then
+  curl -fsSL https://get.acme.sh | sudo sh
+fi
 
 sudo tee /etc/systemd/system/cf-relay-control.service > /dev/null <<SERVICE
 [Unit]

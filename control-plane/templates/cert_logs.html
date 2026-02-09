@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>证书申请日志</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>证书申请日志</h1>
+        <div class="nav">
+          <a class="settings-link" href="{{ scoped_url('certs') }}">返回证书管理</a>
+          <a class="settings-link" href="{{ scoped_url('dashboard') }}">控制台</a>
+          <a class="logout" href="{{ scoped_url('logout') }}">退出</a>
+        </div>
+      </header>
+
+      <section class="card">
+        <form method="post" action="{{ scoped_url('clear_cert_logs') }}" class="inline-form">
+          <button type="submit" class="secondary">清空日志</button>
+        </form>
+        <pre class="log-box">{% if logs %}{{ logs | join('\n') }}{% else %}暂无日志{% endif %}</pre>
+      </section>
+    </div>
+  </body>
+</html>
