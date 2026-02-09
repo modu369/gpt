@@ -29,7 +29,7 @@ if [[ -z "$CONTROL_URL" || -z "$TOKEN" ]]; then
 fi
 
 sudo apt-get update
-sudo apt-get install -y haproxy python3 python3-venv python3-pip git speedtest-cli
+sudo apt-get install -y haproxy python3 python3-venv python3-pip git speedtest-cli openssl
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -41,6 +41,14 @@ if [ ! -d "$WORK_DIR/agent" ] || [ ! -d "$WORK_DIR/configs" ]; then
 fi
 
 sudo mkdir -p /etc/haproxy/maps /etc/haproxy/certs
+sudo touch /etc/haproxy/maps/domains.map
+if ! ls /etc/haproxy/certs/*.pem >/dev/null 2>&1; then
+  sudo openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+    -subj "/CN=relay" \
+    -keyout /etc/haproxy/certs/selfsigned.key \
+    -out /etc/haproxy/certs/selfsigned.crt
+  sudo cat /etc/haproxy/certs/selfsigned.key /etc/haproxy/certs/selfsigned.crt > /etc/haproxy/certs/selfsigned.pem
+fi
 sudo cp "$WORK_DIR/configs/haproxy.cfg" /etc/haproxy/haproxy.cfg
 
 sudo systemctl enable --now haproxy
