@@ -436,6 +436,66 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
     return "issued", issued_at, expires_at, renew_at, None
 
 
+def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
+    acme_sh = find_acme_sh()
+    if not acme_sh:
+        message = "等待配置 acme.sh"
+        log_cert_event(domain, method, "pending", message)
+        return False, message
+    method = normalize_cert_method(method)
+    if method == "dns-01":
+        cmd = [
+            acme_sh,
+            "--issue",
+            "--dns",
+            ACME_DNS_PROVIDER,
+            "--yes-I-know-dns-manual-mode-enough-go-ahead",
+            "-d",
+            domain,
+        ]
+    else:
+        cmd = [acme_sh, "--issue", "--manual", "-d", domain]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        message = output.strip() or "获取验证信息失败"
+        log_cert_event(domain, method, "failed", message)
+        return False, message
+    log_cert_event(domain, method, "pending", output.strip() or "请按提示完成验证")
+    return True, output.strip() or "请按提示完成验证"
+
+
+def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, str | None, str | None, str | None]:
+    acme_sh = find_acme_sh()
+    if not acme_sh:
+        message = "等待配置 acme.sh"
+        log_cert_event(domain, method, "pending", message)
+        return "pending", None, None, None, message
+    method = normalize_cert_method(method)
+    if method == "dns-01":
+        cmd = [
+            acme_sh,
+            "--renew",
+            "--dns",
+            ACME_DNS_PROVIDER,
+            "--yes-I-know-dns-manual-mode-enough-go-ahead",
+            "-d",
+            domain,
+            "--force",
+        ]
+    else:
+        cmd = [acme_sh, "--renew", "--manual", "-d", domain, "--force"]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        message = output.strip() or "验证失败"
+        log_cert_event(domain, method, "failed", message)
+        return "failed", None, None, None, message
+    log_cert_event(domain, method, "issued", output.strip() or "申请成功")
+    issued_at = datetime.utcnow().isoformat()
+    return "issued", issued_at, None, None, None
+
+
 def auto_issue_certs() -> None:
     agent_ips = get_agent_ips()
     if not agent_ips:
@@ -996,10 +1056,8 @@ def retry_cert(cert_id: int, access_key: str | None = None):
         log_cert_event(cert["domain"], cert["method"], "failed", "本地校验失败")
         upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "本地校验失败")
         return redirect(scoped_url("certs"))
-    upsert_cert_record(cert["domain"], cert["method"], "applying", None, None, None, None)
-    status, issued_at, expires_at, renew_at, error = attempt_issue_cert(cert["domain"], cert["method"])
-    last_error = None if status == "issued" else (error or "手动重试失败")
-    upsert_cert_record(cert["domain"], cert["method"], status, issued_at, expires_at, renew_at, last_error)
+    upsert_cert_record(cert["domain"], cert["method"], "pending", None, None, None, None)
+    run_acme_manual_issue(cert["domain"], cert["method"])
     return redirect(scoped_url("certs"))
 
 
@@ -1013,10 +1071,24 @@ def retry_cert_dns(cert_id: int, access_key: str | None = None):
     cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
     if cert is None:
         return redirect(scoped_url("certs"))
-    upsert_cert_record(cert["domain"], "dns-01", "applying", None, None, None, None)
-    status, issued_at, expires_at, renew_at, error = attempt_issue_cert(cert["domain"], "dns-01")
-    last_error = None if status == "issued" else (error or "DNS 手动申请失败")
-    upsert_cert_record(cert["domain"], "dns-01", status, issued_at, expires_at, renew_at, last_error)
+    upsert_cert_record(cert["domain"], "dns-01", "pending", None, None, None, None)
+    run_acme_manual_issue(cert["domain"], "dns-01")
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/verify", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/verify", methods=["POST"])
+def verify_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    status, issued_at, expires_at, renew_at, error = run_acme_manual_verify(cert["domain"], cert["method"])
+    last_error = None if status == "issued" else (error or "验证失败")
+    upsert_cert_record(cert["domain"], cert["method"], status, issued_at, expires_at, renew_at, last_error)
     return redirect(scoped_url("certs"))
 
 
@@ -1042,10 +1114,8 @@ def auto_issue_cert(access_key: str | None = None):
             log_cert_event(domain, method, "failed", "本地校验失败")
             upsert_cert_record(domain, method, "failed", None, None, None, "本地校验失败")
             return redirect(scoped_url("certs"))
-    upsert_cert_record(domain, method, "applying", None, None, None, None)
-    status, issued_at, expires_at, renew_at, error = attempt_issue_cert(domain, method)
-    last_error = None if status == "issued" else (error or "手动申请失败")
-    upsert_cert_record(domain, method, status, issued_at, expires_at, renew_at, last_error)
+    upsert_cert_record(domain, method, "pending", None, None, None, None)
+    run_acme_manual_issue(domain, method)
     return redirect(scoped_url("certs"))
 
 
