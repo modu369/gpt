@@ -29,7 +29,7 @@ if [[ -z "$CONTROL_URL" || -z "$TOKEN" ]]; then
 fi
 
 sudo apt-get update
-sudo apt-get install -y haproxy python3 python3-venv python3-pip git
+sudo apt-get install -y haproxy python3 python3-venv python3-pip git speedtest-cli
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -57,6 +57,26 @@ sudo python3 -m venv "$INSTALL_DIR/venv"
 sudo "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
 sudo "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
+BBR_CONF="/etc/sysctl.d/99-cf-relay-bbr.conf"
+sudo modprobe tcp_bbr || true
+echo "net.core.default_qdisc=fq" | sudo tee "$BBR_CONF" > /dev/null
+echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a "$BBR_CONF" > /dev/null
+sudo sysctl -p "$BBR_CONF" > /dev/null
+
+ENV_FILE="/etc/default/cf-relay-agent"
+MAX_BANDWIDTH_MBPS="${MAX_BANDWIDTH_MBPS:-}"
+if [ -z "$MAX_BANDWIDTH_MBPS" ] && command -v speedtest-cli >/dev/null 2>&1; then
+  SPEEDTEST_RESULT=$(speedtest-cli --simple 2>/dev/null | awk -F': ' '/Download/ {print $2}' | awk '{print $1}')
+  if [ -n "$SPEEDTEST_RESULT" ]; then
+    MAX_BANDWIDTH_MBPS="$SPEEDTEST_RESULT"
+  fi
+fi
+sudo tee "$ENV_FILE" > /dev/null <<ENV
+CONTROL_URL=$CONTROL_URL
+AGENT_TOKEN=$TOKEN
+MAX_BANDWIDTH_MBPS=${MAX_BANDWIDTH_MBPS}
+ENV
+
 sudo tee /etc/systemd/system/cf-relay-agent.service > /dev/null <<SERVICE
 [Unit]
 Description=CF Relay Agent
@@ -65,8 +85,7 @@ After=network.target haproxy.service
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-Environment=CONTROL_URL=$CONTROL_URL
-Environment=AGENT_TOKEN=$TOKEN
+EnvironmentFile=$ENV_FILE
 Environment=RUNTIME_SOCKET=/run/haproxy/admin.sock
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/agent.py
 Restart=always

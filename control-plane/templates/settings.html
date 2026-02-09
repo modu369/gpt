@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>Relay 控制台设置</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>设置</h1>
+        <div class="nav">
+          <a class="settings-link" href="{{ scoped_url('dashboard') }}">返回控制台</a>
+          <a class="logout" href="{{ scoped_url('logout') }}">退出</a>
+        </div>
+      </header>
+
+      <section class="grid">
+        <div class="card">
+          <h2>访问控制</h2>
+          <p class="hint">设置端口与入口标识后，只有端口 + 标识匹配才可进入登录页面。</p>
+          <form method="post" action="{{ scoped_url('update_access_settings') }}" class="stack">
+            <label>
+              控制台端口
+              <input type="number" name="control_port" min="1" max="65535" value="{{ access_port or '' }}" required />
+            </label>
+            <label>
+              后台标识（URL 前缀）
+              <input type="text" name="access_path" placeholder="yun123" value="{{ access_path or '' }}" />
+            </label>
+            <button type="submit">保存设置</button>
+          </form>
+          <p class="hint">当前入口: {{ access_url }}/login</p>
+        </div>
+
+        <div class="card">
+          <h2>域名白名单</h2>
+          <form method="post" action="{{ scoped_url('add_domain') }}" class="inline-form">
+            <input type="text" name="domain" placeholder="example.com" required />
+            <button type="submit">添加</button>
+          </form>
+          <ul>
+            {% for domain in domains %}
+            <li>
+              <span>{{ domain.domain }}</span>
+              <form method="post" action="{{ scoped_url('delete_domain', domain_id=domain.id) }}">
+                <button type="submit">删除</button>
+              </form>
+            </li>
+            {% else %}
+            <li class="empty">暂无域名</li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>Cloudflare 优选 IP</h2>
+          <form method="post" action="{{ scoped_url('add_cf_ip') }}" class="inline-form">
+            <input type="text" name="ip" placeholder="1.1.1.1" required />
+            <input type="number" name="weight" min="1" max="100" value="100" />
+            <button type="submit">添加</button>
+          </form>
+          <ul>
+            {% for ip in cf_ips %}
+            <li>
+              <span>{{ ip.ip }} (权重: {{ ip.weight }})</span>
+              <form method="post" action="{{ scoped_url('delete_cf_ip', ip_id=ip.id) }}">
+                <button type="submit">删除</button>
+              </form>
+            </li>
+            {% else %}
+            <li class="empty">暂无 IP</li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>节点带宽与解析</h2>
+          <p class="hint">设置节点公网 IP 与最大带宽，用于 DNS 权重调度。</p>
+          <ul class="node-settings">
+            {% for agent in agents %}
+            <li>
+              <form method="post" action="{{ scoped_url('update_agent_bandwidth', agent_id=agent.id) }}" class="stack">
+                <strong>{{ agent.name }}</strong>
+                <label>
+                  公网 IP
+                  <input type="text" name="agent_ip" placeholder="1.2.3.4" value="{{ agent.agent_ip or '' }}" />
+                </label>
+                <label>
+                  最大带宽 (Mbps)
+                  <input type="number" name="bandwidth_mbps" min="1" value="{{ agent.bandwidth_mbps or '' }}" />
+                </label>
+                <button type="submit">保存</button>
+              </form>
+            </li>
+            {% else %}
+            <li class="empty">暂无节点</li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>华为云 DNS 权重调度</h2>
+          <form method="post" action="{{ scoped_url('update_dns_settings') }}" class="stack">
+            <label class="checkbox">
+              <input type="checkbox" name="dns_enabled" {% if dns_settings.dns_enabled == 'true' %}checked{% endif %} />
+              启用自动更新
+            </label>
+            <label>
+              API Base URL
+              <input type="text" name="dns_base_url" placeholder="https://dns.ap-southeast-1.myhuaweicloud.com" value="{{ dns_settings.dns_base_url }}" />
+            </label>
+            <label>
+              Zone ID
+              <input type="text" name="dns_zone_id" value="{{ dns_settings.dns_zone_id }}" />
+            </label>
+            <label>
+              记录名 (CNAME/A)
+              <input type="text" name="dns_record_name" placeholder="dispatch.example.com." value="{{ dns_settings.dns_record_name }}" />
+            </label>
+            <label>
+              记录类型
+              <input type="text" name="dns_record_type" placeholder="A" value="{{ dns_settings.dns_record_type }}" />
+            </label>
+            <label>
+              X-Auth-Token
+              <input type="password" name="dns_auth_token" value="{{ dns_settings.dns_auth_token }}" />
+            </label>
+            <button type="submit">保存设置</button>
+          </form>
+          <form method="post" action="{{ scoped_url('manual_dns_sync') }}">
+            <button type="submit" class="secondary">手动同步权重</button>
+          </form>
+          <p class="hint">系统会按节点负载实时更新权重，其他域名可 CNAME 到该记录。</p>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

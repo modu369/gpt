@@ -9,84 +9,75 @@
     <div class="container">
       <header>
         <h1>Relay 控制台</h1>
-        <a class="logout" href="{{ scoped_url('logout') }}">退出</a>
+        <div class="nav">
+          <a class="settings-link" href="{{ scoped_url('settings') }}">设置</a>
+          <a class="logout" href="{{ scoped_url('logout') }}">退出</a>
+        </div>
       </header>
 
+      {% if overload_total and overload_total > 0 %}
+      <div class="alert">
+        <span>检测到 {{ overload_total }} 条节点超载告警</span>
+        <a href="{{ scoped_url('overloads') }}">查看详情</a>
+      </div>
+      {% endif %}
+
+      <section class="summary">
+        <div class="card">
+          <h2>总体监控</h2>
+          <div class="donut-grid">
+            <div class="donut" style="--percent: {{ summary.avg_cpu_percent }};">
+              <div class="donut-center">
+                <strong>{{ summary.avg_cpu_percent }}%</strong>
+                <span>CPU</span>
+              </div>
+            </div>
+            <div class="donut" style="--percent: {{ summary.mem_percent }};">
+              <div class="donut-center">
+                <strong>{{ summary.mem_used_mb }} / {{ summary.mem_total_mb }} MB</strong>
+                <span>内存</span>
+              </div>
+            </div>
+            <div class="donut" style="--percent: {{ summary.bw_percent }};">
+              <div class="donut-center">
+                <strong>{{ summary.bw_used_mbps }} / {{ summary.bw_total_mbps }} Mbps</strong>
+                <span>带宽</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="grid">
-        <div class="card">
-          <h2>访问控制</h2>
-          <p class="hint">设置端口与入口标识后，只有端口 + 标识匹配才可进入登录页面。</p>
-          <form method="post" action="{{ scoped_url('update_access_settings') }}" class="stack">
-            <label>
-              控制台端口
-              <input type="number" name="control_port" min="1" max="65535" value="{{ access_port or '' }}" required />
-            </label>
-            <label>
-              后台标识（URL 前缀）
-              <input type="text" name="access_path" placeholder="yun123" value="{{ access_path or '' }}" />
-            </label>
-            <button type="submit">保存设置</button>
-          </form>
-          <p class="hint">当前入口: {{ access_url }}/login</p>
-        </div>
-
-        <div class="card">
-          <h2>域名白名单</h2>
-          <form method="post" action="{{ scoped_url('add_domain') }}" class="inline-form">
-            <input type="text" name="domain" placeholder="example.com" required />
-            <button type="submit">添加</button>
-          </form>
-          <ul>
-            {% for domain in domains %}
-            <li>
-              <span>{{ domain.domain }}</span>
-              <form method="post" action="{{ scoped_url('delete_domain', domain_id=domain.id) }}">
-                <button type="submit">删除</button>
-              </form>
-            </li>
-            {% else %}
-            <li class="empty">暂无域名</li>
-            {% endfor %}
-          </ul>
-        </div>
-
-        <div class="card">
-          <h2>Cloudflare 优选 IP</h2>
-          <form method="post" action="{{ scoped_url('add_cf_ip') }}" class="inline-form">
-            <input type="text" name="ip" placeholder="1.1.1.1" required />
-            <input type="number" name="weight" min="1" max="100" value="100" />
-            <button type="submit">添加</button>
-          </form>
-          <ul>
-            {% for ip in cf_ips %}
-            <li>
-              <span>{{ ip.ip }} (权重: {{ ip.weight }})</span>
-              <form method="post" action="{{ scoped_url('delete_cf_ip', ip_id=ip.id) }}">
-                <button type="submit">删除</button>
-              </form>
-            </li>
-            {% else %}
-            <li class="empty">暂无 IP</li>
-            {% endfor %}
-          </ul>
-        </div>
-
         <div class="card">
           <h2>Relay 节点</h2>
           <form method="post" action="{{ scoped_url('create_agent') }}" class="inline-form">
             <input type="text" name="name" placeholder="relay-cn2" />
             <button type="submit">生成 Token</button>
           </form>
-          <ul>
+          <div class="agent-grid">
             {% for agent in agents %}
-            <li>
+            <details class="agent-card">
+              <summary>
+                <div class="agent-title">
+                  <span>{{ agent.name }}</span>
+                  {% if saturation_map[agent.id].saturated %}
+                  <span class="badge danger">超载</span>
+                  {% else %}
+                  <span class="badge">正常</span>
+                  {% endif %}
+                </div>
+                <div class="agent-meta">
+                  <span>CPU {{ agent.cpu_percent or '-' }}%</span>
+                  <span>内存 {{ agent.mem_used_mb or '-' }}/{{ agent.mem_total_mb or '-' }} MB</span>
+                  <span>带宽 {{ agent.rx_mbps or '-' }} / {{ agent.tx_mbps or '-' }} Mbps</span>
+                </div>
+              </summary>
               <div class="stack">
-                <span>{{ agent.name }}</span>
                 <small>Token: {{ agent.token }}</small>
                 <small>最近心跳: {{ agent.last_seen or '未连接' }}</small>
                 <small>负载: {{ agent.loadavg or '-' }}</small>
-                <small>内存: {{ agent.mem_used_mb or '-' }} MB</small>
-                <small>带宽: RX {{ agent.rx_bytes or '-' }} / TX {{ agent.tx_bytes or '-' }}</small>
+                <small>超载原因: {{ saturation_map[agent.id].reasons | join(', ') if saturation_map[agent.id].saturated else '无' }}</small>
                 <div class="commands">
                   <small>安装命令</small>
                   <textarea readonly rows="5">curl -fsSL {{ script_base_url }}/install-agent.sh | REPO_URL={{ repo_url }} REPO_REF={{ repo_ref }} bash -s -- \
@@ -99,11 +90,11 @@
               <form method="post" action="{{ scoped_url('delete_agent', agent_id=agent.id) }}">
                 <button type="submit">删除</button>
               </form>
-            </li>
+            </details>
             {% else %}
-            <li class="empty">暂无节点</li>
+            <div class="empty">暂无节点</div>
             {% endfor %}
-          </ul>
+          </div>
         </div>
       </section>
     </div>

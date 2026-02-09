@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>节点超载明细</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>节点超载明细</h1>
+        <div class="nav">
+          <a class="settings-link" href="{{ scoped_url('dashboard') }}">返回控制台</a>
+          <a class="logout" href="{{ scoped_url('logout') }}">退出</a>
+        </div>
+      </header>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>节点</th>
+              <th>超载原因</th>
+              <th>最近发生时间</th>
+              <th>次数</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for event in events %}
+            <tr>
+              <td>{{ event.agent_name }}</td>
+              <td>{{ event.reason }}</td>
+              <td>{{ event.last_seen }}</td>
+              <td>{{ event.count }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="4" class="empty">暂无超载记录</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </body>
+</html>

@@ -16,6 +16,10 @@ RUNTIME_SOCKET = os.getenv("RUNTIME_SOCKET", "/run/haproxy/admin.sock")
 DOMAINS_MAP = Path(os.getenv("DOMAINS_MAP", "/etc/haproxy/maps/domains.map"))
 MAX_SERVERS = int(os.getenv("MAX_SERVERS", "20"))
 NET_IFACE = os.getenv("NET_IFACE", "eth0")
+MAX_BANDWIDTH_MBPS = os.getenv("MAX_BANDWIDTH_MBPS", "")
+
+_LAST_NET: tuple[int, int, float] | None = None
+_LAST_CPU: tuple[int, int] | None = None
 
 
 def fetch_config() -> dict:
@@ -43,6 +47,16 @@ def read_mem_used_mb() -> float:
     return round(used_kb / 1024, 2)
 
 
+def read_mem_total_mb() -> float:
+    mem_total = 0
+    with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith("MemTotal"):
+                mem_total = int(line.split()[1])
+                break
+    return round(mem_total / 1024, 2)
+
+
 def read_loadavg() -> str:
     with open("/proc/loadavg", "r", encoding="utf-8") as handle:
         return handle.read().strip().split(" ")[0]
@@ -59,12 +73,54 @@ def read_net_bytes(interface: str) -> tuple[int, int]:
     return 0, 0
 
 
+def read_cpu_percent() -> float:
+    global _LAST_CPU
+    with open("/proc/stat", "r", encoding="utf-8") as handle:
+        parts = handle.readline().split()
+    if len(parts) < 5:
+        return 0.0
+    total = sum(int(x) for x in parts[1:])
+    idle = int(parts[4])
+    if _LAST_CPU is None:
+        _LAST_CPU = (total, idle)
+        return 0.0
+    last_total, last_idle = _LAST_CPU
+    total_delta = total - last_total
+    idle_delta = idle - last_idle
+    _LAST_CPU = (total, idle)
+    if total_delta <= 0:
+        return 0.0
+    usage = (total_delta - idle_delta) / total_delta * 100
+    return round(usage, 2)
+
+
+def read_net_rate(interface: str, rx_bytes: int, tx_bytes: int) -> tuple[float, float]:
+    global _LAST_NET
+    now = time.time()
+    if _LAST_NET is None:
+        _LAST_NET = (rx_bytes, tx_bytes, now)
+        return 0.0, 0.0
+    last_rx, last_tx, last_time = _LAST_NET
+    elapsed = max(now - last_time, 1)
+    _LAST_NET = (rx_bytes, tx_bytes, now)
+    rx_rate = (rx_bytes - last_rx) * 8 / elapsed / 1_000_000
+    tx_rate = (tx_bytes - last_tx) * 8 / elapsed / 1_000_000
+    return round(rx_rate, 2), round(tx_rate, 2)
+
+
 def post_metrics() -> None:
+    rx_bytes, tx_bytes = read_net_bytes(NET_IFACE)
+    rx_mbps, tx_mbps = read_net_rate(NET_IFACE, rx_bytes, tx_bytes)
     payload = {
         "loadavg": read_loadavg(),
         "mem_used_mb": read_mem_used_mb(),
-        "rx_bytes": read_net_bytes(NET_IFACE)[0],
-        "tx_bytes": read_net_bytes(NET_IFACE)[1],
+        "mem_total_mb": read_mem_total_mb(),
+        "cpu_percent": read_cpu_percent(),
+        "rx_bytes": rx_bytes,
+        "tx_bytes": tx_bytes,
+        "rx_mbps": rx_mbps,
+        "tx_mbps": tx_mbps,
+        "bandwidth_mbps": float(MAX_BANDWIDTH_MBPS) if MAX_BANDWIDTH_MBPS else None,
     }
     requests.post(
         f"{CONTROL_URL}/api/metrics",
