@@ -212,6 +212,11 @@ def get_acme_dns_provider() -> str:
     return value.strip() or ACME_DNS_PROVIDER
 
 
+def get_acme_account_email() -> str:
+    value = get_setting("acme_account_email", "") or ""
+    return value.strip()
+
+
 def normalize_access_path(value: str) -> str:
     cleaned = value.strip().strip("/")
     return cleaned
@@ -381,6 +386,23 @@ def find_acme_sh() -> str | None:
     return None
 
 
+def configure_acme_sh(acme_sh: str) -> None:
+    subprocess.run(
+        [acme_sh, "--set-default-ca", "--server", "letsencrypt"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    email = get_acme_account_email()
+    if email:
+        subprocess.run(
+            [acme_sh, "--register-account", "-m", email],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
 def should_attempt_cert(cert: sqlite3.Row) -> bool:
     status = (cert["status"] or "").strip().lower()
     if status in {"issued", "renewing", "applying"}:
@@ -400,6 +422,7 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
     if not acme_sh:
         log_cert_event(domain, method, "pending", "等待配置 acme.sh")
         return "pending", None, None, None, "等待配置 acme.sh"
+    configure_acme_sh(acme_sh)
     log_cert_event(domain, method, "applying", "开始申请")
     issue_cmd = [
         acme_sh,
@@ -451,6 +474,7 @@ def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
         message = "等待配置 acme.sh"
         log_cert_event(domain, method, "pending", message)
         return False, message
+    configure_acme_sh(acme_sh)
     method = normalize_cert_method(method)
     if method == "dns-01":
         cmd = [
@@ -480,6 +504,7 @@ def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, s
         message = "等待配置 acme.sh"
         log_cert_event(domain, method, "pending", message)
         return "pending", None, None, None, message
+    configure_acme_sh(acme_sh)
     method = normalize_cert_method(method)
     if method == "dns-01":
         cmd = [
@@ -932,6 +957,7 @@ def settings(access_key: str | None = None):
         [
             "acme_sh_path",
             "acme_dns_provider",
+            "acme_account_email",
         ]
     )
     return render_template(
@@ -1222,6 +1248,7 @@ def update_acme_settings(access_key: str | None = None):
         return redirect(scoped_url("login"))
     set_setting("acme_sh_path", request.form.get("acme_sh_path", "").strip())
     set_setting("acme_dns_provider", request.form.get("acme_dns_provider", "").strip())
+    set_setting("acme_account_email", request.form.get("acme_account_email", "").strip())
     install_acme_sh()
     return redirect(scoped_url("settings"))
 

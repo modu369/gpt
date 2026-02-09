@@ -143,12 +143,16 @@
               <input type="text" name="acme_sh_path" placeholder="/root/.acme.sh/acme.sh" value="{{ acme_settings.acme_sh_path }}" />
             </label>
             <label>
-              ACME_DNS_PROVIDER（DNS 验证必填）
+              证书邮箱（可选）
+              <input type="email" name="acme_account_email" placeholder="admin@example.com" value="{{ acme_settings.acme_account_email }}" />
+            </label>
+            <label>
+              ACME_DNS_PROVIDER（DNS 验证自动化可选）
               <input type="text" name="acme_dns_provider" placeholder="dns_cf" value="{{ acme_settings.acme_dns_provider }}" />
             </label>
             <button type="submit">保存并安装 acme.sh</button>
           </form>
-          <p class="hint">保存后会自动安装 acme.sh。DNS 验证需配置对应的 provider 环境。</p>
+          <p class="hint">保存后会自动安装 acme.sh。默认使用 Let's Encrypt，DNS 验证可手动或配置 provider。</p>
         </div>
       </section>
     </div>
