@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>Relay 控制台</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Relay 控制台</h1>
+        <a class="logout" href="/logout">退出</a>
+      </header>
+
+      <section class="grid">
+        <div class="card">
+          <h2>域名白名单</h2>
+          <form method="post" action="/domains" class="inline-form">
+            <input type="text" name="domain" placeholder="example.com" required />
+            <button type="submit">添加</button>
+          </form>
+          <ul>
+            {% for domain in domains %}
+            <li>
+              <span>{{ domain.domain }}</span>
+              <form method="post" action="/domains/{{ domain.id }}/delete">
+                <button type="submit">删除</button>
+              </form>
+            </li>
+            {% else %}
+            <li class="empty">暂无域名</li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>Cloudflare 优选 IP</h2>
+          <form method="post" action="/cf_ips" class="inline-form">
+            <input type="text" name="ip" placeholder="1.1.1.1" required />
+            <input type="number" name="weight" min="1" max="100" value="100" />
+            <button type="submit">添加</button>
+          </form>
+          <ul>
+            {% for ip in cf_ips %}
+            <li>
+              <span>{{ ip.ip }} (权重: {{ ip.weight }})</span>
+              <form method="post" action="/cf_ips/{{ ip.id }}/delete">
+                <button type="submit">删除</button>
+              </form>
+            </li>
+            {% else %}
+            <li class="empty">暂无 IP</li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>Relay 节点</h2>
+          <form method="post" action="/agents" class="inline-form">
+            <input type="text" name="name" placeholder="relay-cn2" />
+            <button type="submit">生成 Token</button>
+          </form>
+          <ul>
+            {% for agent in agents %}
+            <li>
+              <div class="stack">
+                <span>{{ agent.name }}</span>
+                <small>Token: {{ agent.token }}</small>
+                <small>最近心跳: {{ agent.last_seen or '未连接' }}</small>
+                <small>负载: {{ agent.loadavg or '-' }}</small>
+                <small>内存: {{ agent.mem_used_mb or '-' }} MB</small>
+                <small>带宽: RX {{ agent.rx_bytes or '-' }} / TX {{ agent.tx_bytes or '-' }}</small>
+              </div>
+              <form method="post" action="/agents/{{ agent.id }}/delete">
+                <button type="submit">删除</button>
+              </form>
+            </li>
+            {% else %}
+            <li class="empty">暂无节点</li>
+            {% endfor %}
+          </ul>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>
