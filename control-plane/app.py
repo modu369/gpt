@@ -1223,9 +1223,15 @@ def install_acme_sh() -> None:
     if find_acme_sh():
         return
     subprocess.run(
-        ["bash", "-c", "curl -fsSL https://get.acme.sh | sh -s -- --install --force"],
+        ["bash", "-c", "curl -fsSL https://get.acme.sh | sh"],
         check=False,
     )
+    acme_sh = find_acme_sh()
+    if acme_sh:
+        subprocess.run(
+            [acme_sh, "--install", "--force"],
+            check=False,
+        )
 
 
 @app.route("/settings/acme", methods=["POST"])
