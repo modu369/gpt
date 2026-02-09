@@ -709,6 +709,7 @@ def api_metrics():
     rx_mbps = payload.get("rx_mbps")
     tx_mbps = payload.get("tx_mbps")
     bandwidth_mbps = payload.get("bandwidth_mbps")
+    public_ip = (payload.get("public_ip") or "").strip()
     update_fields = [
         payload.get("loadavg"),
         mem_used,
@@ -734,6 +735,11 @@ def api_metrics():
         db.execute(
             "UPDATE agents SET bandwidth_mbps = ? WHERE id = ?",
             (bandwidth_mbps, agent["id"]),
+        )
+    if public_ip and not agent["agent_ip"]:
+        db.execute(
+            "UPDATE agents SET agent_ip = ? WHERE id = ?",
+            (public_ip, agent["id"]),
         )
     db.commit()
     agent = db.execute("SELECT * FROM agents WHERE id = ?", (agent["id"],)).fetchone()

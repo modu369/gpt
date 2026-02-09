@@ -111,6 +111,13 @@ def read_net_rate(interface: str, rx_bytes: int, tx_bytes: int) -> tuple[float, 
 def post_metrics() -> None:
     rx_bytes, tx_bytes = read_net_bytes(NET_IFACE)
     rx_mbps, tx_mbps = read_net_rate(NET_IFACE, rx_bytes, tx_bytes)
+    public_ip = None
+    try:
+        response = requests.get("https://api.ipify.org", timeout=3)
+        if response.ok:
+            public_ip = response.text.strip()
+    except requests.RequestException:
+        public_ip = None
     payload = {
         "loadavg": read_loadavg(),
         "mem_used_mb": read_mem_used_mb(),
@@ -121,6 +128,7 @@ def post_metrics() -> None:
         "rx_mbps": rx_mbps,
         "tx_mbps": tx_mbps,
         "bandwidth_mbps": float(MAX_BANDWIDTH_MBPS) if MAX_BANDWIDTH_MBPS else None,
+        "public_ip": public_ip,
     }
     requests.post(
         f"{CONTROL_URL}/api/metrics",
@@ -132,7 +140,7 @@ def post_metrics() -> None:
 
 def write_domains(domains: Iterable[str]) -> None:
     DOMAINS_MAP.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"{domain} 1" for domain in sorted(set(domains))]
+    lines = [domain for domain in sorted(set(domains))]
     DOMAINS_MAP.write_text("\n".join(lines) + ("\n" if lines else ""))
 
 
