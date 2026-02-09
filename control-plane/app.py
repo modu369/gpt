@@ -411,7 +411,7 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
     ]
     if method == "dns-01":
         dns_provider = get_acme_dns_provider()
-        issue_cmd += ["--dns", dns_provider or "dns_manual", "--yes-I-know-dns-manual-mode-enough-go-ahead"]
+        issue_cmd += ["--dns", dns_provider or "dns_manual"]
     else:
         issue_cmd.append("--standalone")
     result = subprocess.run(issue_cmd, capture_output=True, text=True, check=False)
@@ -458,7 +458,6 @@ def run_acme_manual_issue(domain: str, method: str) -> tuple[bool, str]:
             "--issue",
             "--dns",
             get_acme_dns_provider() or "dns_manual",
-            "--yes-I-know-dns-manual-mode-enough-go-ahead",
             "-d",
             domain,
         ]
@@ -488,7 +487,6 @@ def run_acme_manual_verify(domain: str, method: str) -> tuple[str, str | None, s
             "--renew",
             "--dns",
             get_acme_dns_provider() or "dns_manual",
-            "--yes-I-know-dns-manual-mode-enough-go-ahead",
             "-d",
             domain,
             "--force",
