@@ -29,12 +29,12 @@ scripts/         # 一键安装/卸载脚本
 ### 1. 主控端安装（Debian 12）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts/install-control.sh | \
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system-6h0ek0/scripts/install-control.sh | \
   REPO_URL=https://github.com/modu369/gpt.git \
-  REPO_REF=codex/develop-high-performance-cloudflare-proxy-system bash
+  REPO_REF=codex/develop-high-performance-cloudflare-proxy-system-6h0ek0 bash
 ```
 
-安装完成后访问：`http://<控制机IP>:8080`
+安装完成后访问：`http://<控制机IP>:8080/yun123`
 
 默认账号密码在安装日志中输出，也可通过环境变量配置。
 
@@ -43,9 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 登录主控后台，生成该节点的安装令牌 (Enroll Token)，在被控机器上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts/install-agent.sh | \
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system-6h0ek0/scripts/install-agent.sh | \
   REPO_URL=https://github.com/modu369/gpt.git \
-  REPO_REF=codex/develop-high-performance-cloudflare-proxy-system bash -s -- \
+  REPO_REF=codex/develop-high-performance-cloudflare-proxy-system-6h0ek0 bash -s -- \
   --control-url http://<控制机IP>:8080 \
   --token <ENROLL_TOKEN>
 ```

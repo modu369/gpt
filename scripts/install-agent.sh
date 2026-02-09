@@ -4,7 +4,7 @@ set -euo pipefail
 CONTROL_URL=""
 TOKEN=""
 REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
-REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system}"
+REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system-6h0ek0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -77,5 +77,6 @@ SERVICE
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now cf-relay-agent.service
+sudo systemctl restart cf-relay-agent.service
 
 echo "Agent 已启动并开始同步配置。"

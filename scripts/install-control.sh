@@ -5,7 +5,7 @@ INSTALL_DIR="/opt/cf-relay-control"
 CONTROL_PORT="${CONTROL_PORT:-8080}"
 CONTROL_ACCESS_PATH="${CONTROL_ACCESS_PATH:-yun123}"
 REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
-REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system}"
+REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system-6h0ek0}"
 
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip git
@@ -51,6 +51,7 @@ SERVICE
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now cf-relay-control.service
+sudo systemctl restart cf-relay-control.service
 
 sleep 1
 if ! systemctl is-active --quiet cf-relay-control.service; then

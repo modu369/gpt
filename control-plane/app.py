@@ -30,7 +30,7 @@ SECRET_KEY = os.getenv("CONTROL_SECRET_KEY", secrets.token_hex(16))
 DEFAULT_ACCESS_PATH = os.getenv("CONTROL_ACCESS_PATH", "yun123")
 SCRIPT_BASE_URL = os.getenv(
     "SCRIPT_BASE_URL",
-    "https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts",
+    "https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system-6h0ek0/scripts",
 )
 REPO_URL = os.getenv(
     "REPO_URL",
@@ -38,7 +38,7 @@ REPO_URL = os.getenv(
 )
 REPO_REF = os.getenv(
     "REPO_REF",
-    "codex/develop-high-performance-cloudflare-proxy-system",
+    "codex/develop-high-performance-cloudflare-proxy-system-6h0ek0",
 )
 
 app = Flask(__name__)
