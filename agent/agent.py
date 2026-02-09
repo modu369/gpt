@@ -187,6 +187,14 @@ def ensure_runtime_socket() -> None:
             time.sleep(1)
 
 
+def ensure_backends() -> None:
+    response = send_runtime("show servers state cloudflare_http")
+    if "Can't find backend." in response:
+        print("HAProxy backend missing; restarting haproxy to reload config.")
+        subprocess.run(["systemctl", "restart", "haproxy"], check=False)
+        time.sleep(2)
+
+
 def update_servers(cf_ips: list[dict]) -> None:
     servers = cf_ips[:MAX_SERVERS]
     for idx in range(1, MAX_SERVERS + 1):
@@ -219,6 +227,7 @@ def main() -> None:
             domains = config.get("domains", [])
             write_domains(domains)
             ensure_runtime_socket()
+            ensure_backends()
             try:
                 update_acl(domains)
             except (OSError, socket.error):
