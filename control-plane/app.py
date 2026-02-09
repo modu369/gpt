@@ -27,6 +27,7 @@ DB_PATH = BASE_DIR / "control.db"
 DEFAULT_ADMIN_USER = os.getenv("CONTROL_ADMIN_USER", "admin")
 DEFAULT_ADMIN_PASS = os.getenv("CONTROL_ADMIN_PASS", "admin123")
 SECRET_KEY = os.getenv("CONTROL_SECRET_KEY", secrets.token_hex(16))
+DEFAULT_ACCESS_PATH = os.getenv("CONTROL_ACCESS_PATH", "yun123")
 SCRIPT_BASE_URL = os.getenv(
     "SCRIPT_BASE_URL",
     "https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts",
@@ -118,6 +119,10 @@ def init_db() -> None:
             (DEFAULT_ADMIN_USER, generate_password_hash(DEFAULT_ADMIN_PASS), datetime.utcnow().isoformat()),
         )
         db.commit()
+    if get_setting("control_port") is None:
+        set_setting("control_port", os.getenv("CONTROL_PORT", "8080"))
+    if get_setting("access_path") is None:
+        set_setting("access_path", DEFAULT_ACCESS_PATH)
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
@@ -142,7 +147,7 @@ def normalize_access_path(value: str) -> str:
 
 
 def get_access_config() -> tuple[str, str]:
-    access_path = get_setting("access_path", "") or ""
+    access_path = get_setting("access_path", DEFAULT_ACCESS_PATH) or ""
     access_path = normalize_access_path(access_path)
     access_port = get_setting("control_port", os.getenv("CONTROL_PORT", "8080")) or ""
     return access_path, access_port

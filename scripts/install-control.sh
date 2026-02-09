@@ -3,6 +3,7 @@ set -euo pipefail
 
 INSTALL_DIR="/opt/cf-relay-control"
 CONTROL_PORT="${CONTROL_PORT:-8080}"
+CONTROL_ACCESS_PATH="${CONTROL_ACCESS_PATH:-yun123}"
 REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
 REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system}"
 
@@ -38,6 +39,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$INSTALL_DIR
 Environment=CONTROL_PORT=$CONTROL_PORT
+Environment=CONTROL_ACCESS_PATH=$CONTROL_ACCESS_PATH
 Environment=CONTROL_ADMIN_USER=${CONTROL_ADMIN_USER:-admin}
 Environment=CONTROL_ADMIN_PASS=${CONTROL_ADMIN_PASS:-admin123}
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
@@ -57,7 +59,7 @@ if ! systemctl is-active --quiet cf-relay-control.service; then
   exit 1
 fi
 
-echo "控制台已启动: http://<IP>:$CONTROL_PORT"
+echo "控制台已启动: http://<IP>:$CONTROL_PORT/$CONTROL_ACCESS_PATH"
 echo "默认账号: ${CONTROL_ADMIN_USER:-admin}"
 echo "默认密码: ${CONTROL_ADMIN_PASS:-admin123}"
-echo "如无法访问 8080，请检查安全组/防火墙放行 TCP 8080。"
+echo "如无法访问 $CONTROL_PORT，请检查安全组/防火墙放行 TCP $CONTROL_PORT。"
