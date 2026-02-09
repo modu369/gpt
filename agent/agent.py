@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import socket
+import re
 import time
 from pathlib import Path
 from typing import Iterable
@@ -140,8 +141,24 @@ def post_metrics() -> None:
 
 def write_domains(domains: Iterable[str]) -> None:
     DOMAINS_MAP.parent.mkdir(parents=True, exist_ok=True)
-    lines = [domain for domain in sorted(set(domains))]
-    DOMAINS_MAP.write_text("\n".join(lines) + ("\n" if lines else ""))
+    patterns = normalize_domains(domains)
+    DOMAINS_MAP.write_text("\n".join(patterns) + ("\n" if patterns else ""))
+
+
+def normalize_domains(domains: Iterable[str]) -> list[str]:
+    unique = sorted(set(domain.strip() for domain in domains if domain.strip()))
+    if not unique:
+        return [".*"]
+    return [f"^{re.escape(domain)}$" for domain in unique]
+
+
+def update_acl(domains: Iterable[str]) -> None:
+    patterns = normalize_domains(domains)
+    send_runtime("clear acl allowed_host")
+    send_runtime("clear acl allowed_sni")
+    for pattern in patterns:
+        send_runtime(f"add acl allowed_host {pattern}")
+        send_runtime(f"add acl allowed_sni {pattern}")
 
 
 def send_runtime(cmd: str) -> str:
@@ -182,7 +199,12 @@ def main() -> None:
     while True:
         try:
             config = fetch_config()
-            write_domains(config.get("domains", []))
+            domains = config.get("domains", [])
+            write_domains(domains)
+            try:
+                update_acl(domains)
+            except (OSError, socket.error):
+                pass
             update_servers(config.get("cf_ips", []))
             post_metrics()
         except requests.RequestException as exc:
