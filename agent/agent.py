@@ -153,7 +153,7 @@ def write_domains(domains: Iterable[str]) -> None:
 def normalize_domains(domains: Iterable[str]) -> list[str]:
     unique = sorted(set(domain.strip() for domain in domains if domain.strip()))
     if not unique:
-        return [".*"]
+        return []
     return [f"^{re.escape(domain)}$" for domain in unique]
 
 

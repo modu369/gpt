@@ -64,6 +64,24 @@
           </label>
           <button type="submit">保存记录</button>
         </form>
+        <details>
+          <summary class="secondary">已有证书添加</summary>
+          <form method="post" action="{{ scoped_url('add_existing_cert') }}" class="stack">
+            <label>
+              域名
+              <input type="text" name="domain" placeholder="example.com" required />
+            </label>
+            <label>
+              证书内容 (PEM)
+              <textarea name="cert_text" rows="6" placeholder="-----BEGIN CERTIFICATE-----" required></textarea>
+            </label>
+            <label>
+              私钥内容 (PEM)
+              <textarea name="key_text" rows="6" placeholder="-----BEGIN PRIVATE KEY-----" required></textarea>
+            </label>
+            <button type="submit" class="secondary">确认使用该证书</button>
+          </form>
+        </details>
       </section>
 
       <section class="card">
@@ -127,6 +145,9 @@
                 <div class="inline-form">
                   <form method="post" action="{{ scoped_url('retry_cert', cert_id=cert.id) }}">
                     <button type="submit">重试</button>
+                  </form>
+                  <form method="post" action="{{ scoped_url('retry_cert_dns', cert_id=cert.id) }}">
+                    <button type="submit" class="secondary">DNS 验证申请</button>
                   </form>
                   <form method="post" action="{{ scoped_url('delete_cert', cert_id=cert.id) }}">
                     <button type="submit" class="secondary">删除</button>

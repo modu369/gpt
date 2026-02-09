@@ -864,6 +864,28 @@ def add_cert(access_key: str | None = None):
     return redirect(scoped_url("certs"))
 
 
+@app.route("/certs/add-existing", methods=["POST"])
+@app.route("/<access_key>/certs/add-existing", methods=["POST"])
+def add_existing_cert(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    domain = request.form.get("domain", "").strip()
+    cert_text = request.form.get("cert_text", "").strip()
+    key_text = request.form.get("key_text", "").strip()
+    if not (domain and cert_text and key_text):
+        return redirect(scoped_url("certs"))
+    db = get_db()
+    db.execute(
+        "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
+        (domain, datetime.utcnow().isoformat()),
+    )
+    db.commit()
+    save_uploaded_cert(domain, cert_text.encode("utf-8"), key_text.encode("utf-8"))
+    upsert_cert_record(domain, "passthrough", "issued", None, None, None, None)
+    return redirect(scoped_url("certs"))
+
+
 @app.route("/certs/<int:cert_id>/update", methods=["POST"])
 @app.route("/<access_key>/certs/<int:cert_id>/update", methods=["POST"])
 def update_cert(cert_id: int, access_key: str | None = None):
@@ -904,6 +926,23 @@ def retry_cert(cert_id: int, access_key: str | None = None):
     status, issued_at, expires_at, renew_at, error = attempt_issue_cert(cert["domain"], cert["method"])
     last_error = None if status == "issued" else (error or "手动重试失败")
     upsert_cert_record(cert["domain"], cert["method"], status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/dns", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/dns", methods=["POST"])
+def retry_cert_dns(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    upsert_cert_record(cert["domain"], "dns-01", "applying", None, None, None, None)
+    status, issued_at, expires_at, renew_at, error = attempt_issue_cert(cert["domain"], "dns-01")
+    last_error = None if status == "issued" else (error or "DNS 手动申请失败")
+    upsert_cert_record(cert["domain"], "dns-01", status, issued_at, expires_at, renew_at, last_error)
     return redirect(scoped_url("certs"))
 
 
