@@ -4,6 +4,8 @@ import argparse
 import os
 import socket
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Iterable
@@ -170,6 +172,21 @@ def send_runtime(cmd: str) -> str:
     return data.decode("utf-8", errors="ignore")
 
 
+def ensure_runtime_socket() -> None:
+    socket_path = Path(RUNTIME_SOCKET)
+    if socket_path.exists() and not socket_path.is_socket():
+        print(f"Runtime socket path is not a socket: {socket_path}")
+        if socket_path.is_dir():
+            shutil.rmtree(socket_path)
+        else:
+            socket_path.unlink()
+        subprocess.run(["systemctl", "restart", "haproxy"], check=False)
+        for _ in range(10):
+            if socket_path.exists() and socket_path.is_socket():
+                break
+            time.sleep(1)
+
+
 def update_servers(cf_ips: list[dict]) -> None:
     servers = cf_ips[:MAX_SERVERS]
     for idx in range(1, MAX_SERVERS + 1):
@@ -201,6 +218,7 @@ def main() -> None:
             config = fetch_config()
             domains = config.get("domains", [])
             write_domains(domains)
+            ensure_runtime_socket()
             try:
                 update_acl(domains)
             except (OSError, socket.error):
