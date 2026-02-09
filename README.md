@@ -29,7 +29,8 @@ scripts/         # 一键安装/卸载脚本
 ### 1. 主控端安装（Debian 12）
 
 ```bash
-curl -fsSL https://example.com/install-control.sh | REPO_URL=https://github.com/your-org/cf-relay.git bash
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts/install-control.sh | \
+  REPO_URL=https://github.com/modu369/gpt.git bash
 ```
 
 安装完成后访问：`http://<控制机IP>:8080`
@@ -41,7 +42,8 @@ curl -fsSL https://example.com/install-control.sh | REPO_URL=https://github.com/
 登录主控后台，生成该节点的安装令牌 (Enroll Token)，在被控机器上执行：
 
 ```bash
-curl -fsSL https://example.com/install-agent.sh | REPO_URL=https://github.com/your-org/cf-relay.git bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts/install-agent.sh | \
+  REPO_URL=https://github.com/modu369/gpt.git bash -s -- \
   --control-url http://<控制机IP>:8080 \
   --token <ENROLL_TOKEN>
 ```
