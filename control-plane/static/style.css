@@ -88,6 +88,7 @@ h1 {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
 input,
@@ -121,6 +122,18 @@ button.secondary {
   background: #5f6b7a;
 }
 
+button {
+  transition: background 0.2s ease;
+}
+
+button:hover {
+  background: #1558b0;
+}
+
+button.secondary:hover {
+  background: #465164;
+}
+
 details {
   border-radius: 8px;
 }
@@ -133,6 +146,7 @@ details summary {
   background: #1a73e8;
   color: #fff;
   display: inline-block;
+  font-size: 13px;
 }
 
 details summary.secondary {
@@ -259,7 +273,7 @@ li:last-child {
   gap: 12px;
   flex-wrap: wrap;
   font-size: 12px;
-  color: #5f6b7a;
+  color: #ffffff;
   margin-top: 6px;
 }
 
