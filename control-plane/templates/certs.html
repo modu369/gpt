@@ -82,6 +82,23 @@
             <button type="submit" class="secondary">确认使用该证书</button>
           </form>
         </details>
+        <details>
+          <summary class="secondary">手动输入域名申请</summary>
+          <form method="post" action="{{ scoped_url('auto_issue_cert') }}" class="stack">
+            <label>
+              域名（支持通配符）
+              <input type="text" name="domain" placeholder="example.com 或 *.example.com" required />
+            </label>
+            <label>
+              验证方式
+              <select name="method">
+                <option value="http-01">HTTP-01（文件验证）</option>
+                <option value="dns-01">DNS-01（支持通配符）</option>
+              </select>
+            </label>
+            <button type="submit" class="secondary">立即申请</button>
+          </form>
+        </details>
       </section>
 
       <section class="card">
@@ -121,49 +138,63 @@
               <td>{{ cert.renew_at or '-' }}</td>
               <td>{{ cert.last_error or '-' }}</td>
               <td>
-                <form method="post" action="{{ scoped_url('update_cert', cert_id=cert.id) }}" class="stack">
-                  <select name="method">
-                    <option value="http-01" {% if cert.method == 'http-01' %}selected{% endif %}>HTTP-01</option>
-                    <option value="dns-01" {% if cert.method == 'dns-01' %}selected{% endif %}>DNS-01</option>
-                    <option value="passthrough" {% if cert.method == 'passthrough' %}selected{% endif %}>直通</option>
-                  </select>
-                  <select name="status">
-                    <option value="pending" {% if cert.status == 'pending' %}selected{% endif %}>待验证</option>
-                    <option value="issued" {% if cert.status == 'issued' %}selected{% endif %}>已签发</option>
-                    <option value="renewing" {% if cert.status == 'renewing' %}selected{% endif %}>续签中</option>
-                    <option value="failed" {% if cert.status == 'failed' %}selected{% endif %}>失败</option>
-                    <option value="applying" {% if cert.status == 'applying' %}selected{% endif %}>正在申请</option>
-                  </select>
-                  <input type="text" name="issued_at" value="{{ cert.issued_at or '' }}" placeholder="申请时间" />
-                  <input type="text" name="expires_at" value="{{ cert.expires_at or '' }}" placeholder="到期时间" />
-                  <input type="text" name="renew_at" value="{{ cert.renew_at or '' }}" placeholder="自动续费时间" />
-                  <input type="text" name="last_error" value="{{ cert.last_error or '' }}" placeholder="失败原因" />
-                  <div class="inline-form">
-                    <button type="submit">更新</button>
-                  </div>
-                </form>
                 <div class="inline-form">
-                  <form method="post" action="{{ scoped_url('retry_cert', cert_id=cert.id) }}">
-                    <button type="submit">重试</button>
-                  </form>
-                  <form method="post" action="{{ scoped_url('retry_cert_dns', cert_id=cert.id) }}">
-                    <button type="submit" class="secondary">DNS 验证申请</button>
-                  </form>
+                  <details class="modal">
+                    <summary>修改</summary>
+                    <form method="post" action="{{ scoped_url('update_cert', cert_id=cert.id) }}" class="stack">
+                      <select name="method">
+                        <option value="http-01" {% if cert.method == 'http-01' %}selected{% endif %}>HTTP-01</option>
+                        <option value="dns-01" {% if cert.method == 'dns-01' %}selected{% endif %}>DNS-01</option>
+                        <option value="passthrough" {% if cert.method == 'passthrough' %}selected{% endif %}>直通</option>
+                      </select>
+                      <select name="status">
+                        <option value="pending" {% if cert.status == 'pending' %}selected{% endif %}>待验证</option>
+                        <option value="issued" {% if cert.status == 'issued' %}selected{% endif %}>已签发</option>
+                        <option value="renewing" {% if cert.status == 'renewing' %}selected{% endif %}>续签中</option>
+                        <option value="failed" {% if cert.status == 'failed' %}selected{% endif %}>失败</option>
+                        <option value="applying" {% if cert.status == 'applying' %}selected{% endif %}>正在申请</option>
+                      </select>
+                      <input type="text" name="issued_at" value="{{ cert.issued_at or '' }}" placeholder="申请时间" />
+                      <input type="text" name="expires_at" value="{{ cert.expires_at or '' }}" placeholder="到期时间" />
+                      <input type="text" name="renew_at" value="{{ cert.renew_at or '' }}" placeholder="自动续费时间" />
+                      <input type="text" name="last_error" value="{{ cert.last_error or '' }}" placeholder="失败原因" />
+                      <div class="inline-form">
+                        <button type="submit">确认</button>
+                      </div>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>上传证书</summary>
+                    <form method="post" action="{{ scoped_url('upload_cert', cert_id=cert.id) }}" enctype="multipart/form-data" class="stack">
+                      <label>
+                        证书文件
+                        <input type="file" name="cert_file" required />
+                      </label>
+                      <label>
+                        私钥文件
+                        <input type="file" name="key_file" required />
+                      </label>
+                      <button type="submit" class="secondary">确认上传</button>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>重试申请</summary>
+                    <form method="post" action="{{ scoped_url('retry_cert', cert_id=cert.id) }}" class="stack">
+                      <p class="hint">需要域名已解析到节点 IP。</p>
+                      <button type="submit">开始重试</button>
+                    </form>
+                  </details>
+                  <details class="modal">
+                    <summary>DNS 验证申请</summary>
+                    <form method="post" action="{{ scoped_url('retry_cert_dns', cert_id=cert.id) }}" class="stack">
+                      <p class="hint">支持通配符域名，需要配置 ACME_DNS_PROVIDER。</p>
+                      <button type="submit" class="secondary">开始 DNS 申请</button>
+                    </form>
+                  </details>
                   <form method="post" action="{{ scoped_url('delete_cert', cert_id=cert.id) }}">
                     <button type="submit" class="secondary">删除</button>
                   </form>
                 </div>
-                <form method="post" action="{{ scoped_url('upload_cert', cert_id=cert.id) }}" enctype="multipart/form-data" class="stack">
-                  <label>
-                    证书文件
-                    <input type="file" name="cert_file" required />
-                  </label>
-                  <label>
-                    私钥文件
-                    <input type="file" name="key_file" required />
-                  </label>
-                  <button type="submit" class="secondary">上传证书</button>
-                </form>
               </td>
             </tr>
             {% else %}

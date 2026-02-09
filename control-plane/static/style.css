@@ -121,6 +121,28 @@ button.secondary {
   background: #5f6b7a;
 }
 
+details {
+  border-radius: 8px;
+}
+
+details summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #1a73e8;
+  color: #fff;
+  display: inline-block;
+}
+
+details summary.secondary {
+  background: #5f6b7a;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
 .alert {
   display: flex;
   justify-content: space-between;

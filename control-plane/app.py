@@ -6,7 +6,8 @@ import socket as net_socket
 import sqlite3
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse, urlunparse
@@ -375,9 +376,9 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
         return "issued", None, None, None, None
     acme_sh = find_acme_sh()
     if not acme_sh:
-        return "failed", None, None, None, "acme.sh 未安装"
+        return "pending", None, None, None, "等待配置 acme.sh"
     if method == "dns-01" and not ACME_DNS_PROVIDER:
-        return "failed", None, None, None, "缺少 ACME_DNS_PROVIDER 配置"
+        return "pending", None, None, None, "缺少 ACME_DNS_PROVIDER 配置"
     issue_cmd = [
         acme_sh,
         "--issue",
@@ -445,6 +446,35 @@ def save_uploaded_cert(domain: str, cert_file: bytes, key_file: bytes) -> None:
     (target_dir / "fullchain.pem").write_bytes(cert_file)
     (target_dir / "privkey.pem").write_bytes(key_file)
 
+
+def extract_cert_dates(cert_bytes: bytes) -> tuple[str | None, str | None, str | None]:
+    with NamedTemporaryFile(delete=True) as handle:
+        handle.write(cert_bytes)
+        handle.flush()
+        result = subprocess.run(
+            ["openssl", "x509", "-noout", "-dates", "-in", handle.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode != 0:
+        return None, None, None
+    issued_at = None
+    expires_at = None
+    for line in result.stdout.splitlines():
+        if line.startswith("notBefore="):
+            issued_at = line.split("=", 1)[1].strip()
+        if line.startswith("notAfter="):
+            expires_at = line.split("=", 1)[1].strip()
+    if not issued_at or not expires_at:
+        return None, None, None
+    try:
+        issued_dt = datetime.strptime(issued_at, "%b %d %H:%M:%S %Y %Z")
+        expires_dt = datetime.strptime(expires_at, "%b %d %H:%M:%S %Y %Z")
+    except ValueError:
+        return None, None, None
+    renew_dt = expires_dt - timedelta(days=30)
+    return issued_dt.isoformat(), expires_dt.isoformat(), renew_dt.isoformat()
 def upsert_cert_record(
     domain: str,
     method: str,
@@ -881,8 +911,11 @@ def add_existing_cert(access_key: str | None = None):
         (domain, datetime.utcnow().isoformat()),
     )
     db.commit()
-    save_uploaded_cert(domain, cert_text.encode("utf-8"), key_text.encode("utf-8"))
-    upsert_cert_record(domain, "passthrough", "issued", None, None, None, None)
+    cert_bytes = cert_text.encode("utf-8")
+    key_bytes = key_text.encode("utf-8")
+    save_uploaded_cert(domain, cert_bytes, key_bytes)
+    issued_at, expires_at, renew_at = extract_cert_dates(cert_bytes)
+    upsert_cert_record(domain, "passthrough", "issued", issued_at, expires_at, renew_at, None)
     return redirect(scoped_url("certs"))
 
 
@@ -946,6 +979,34 @@ def retry_cert_dns(cert_id: int, access_key: str | None = None):
     return redirect(scoped_url("certs"))
 
 
+@app.route("/certs/auto-issue", methods=["POST"])
+@app.route("/<access_key>/certs/auto-issue", methods=["POST"])
+def auto_issue_cert(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    domain = request.form.get("domain", "").strip()
+    method = normalize_cert_method(request.form.get("method", "http-01"))
+    if not domain:
+        return redirect(scoped_url("certs"))
+    db = get_db()
+    db.execute(
+        "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
+        (domain, datetime.utcnow().isoformat()),
+    )
+    db.commit()
+    if method != "dns-01":
+        agent_ips = get_agent_ips()
+        if not local_domain_check(domain, agent_ips):
+            upsert_cert_record(domain, method, "failed", None, None, None, "本地校验失败")
+            return redirect(scoped_url("certs"))
+    upsert_cert_record(domain, method, "applying", None, None, None, None)
+    status, issued_at, expires_at, renew_at, error = attempt_issue_cert(domain, method)
+    last_error = None if status == "issued" else (error or "手动申请失败")
+    upsert_cert_record(domain, method, status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
 @app.route("/certs/<int:cert_id>/upload", methods=["POST"])
 @app.route("/<access_key>/certs/<int:cert_id>/upload", methods=["POST"])
 def upload_cert(cert_id: int, access_key: str | None = None):
@@ -961,8 +1022,11 @@ def upload_cert(cert_id: int, access_key: str | None = None):
     if not cert_file or not key_file:
         upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "缺少证书或私钥")
         return redirect(scoped_url("certs"))
-    save_uploaded_cert(cert["domain"], cert_file.read(), key_file.read())
-    upsert_cert_record(cert["domain"], "passthrough", "issued", None, None, None, None)
+    cert_bytes = cert_file.read()
+    key_bytes = key_file.read()
+    save_uploaded_cert(cert["domain"], cert_bytes, key_bytes)
+    issued_at, expires_at, renew_at = extract_cert_dates(cert_bytes)
+    upsert_cert_record(cert["domain"], "passthrough", "issued", issued_at, expires_at, renew_at, None)
     return redirect(scoped_url("certs"))
 
 
