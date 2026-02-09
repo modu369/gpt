@@ -17,6 +17,9 @@ AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "5"))
 RUNTIME_SOCKET = os.getenv("RUNTIME_SOCKET", "/run/haproxy/admin.sock")
 DOMAINS_MAP = Path(os.getenv("DOMAINS_MAP", "/etc/haproxy/maps/domains.map"))
+CERT_DIR = Path(os.getenv("CERT_DIR", "/etc/haproxy/certs"))
+SELF_SIGNED_NAME = "selfsigned.pem"
+SELF_SIGNED_CN = "relay"
 MAX_SERVERS = int(os.getenv("MAX_SERVERS", "20"))
 NET_IFACE = os.getenv("NET_IFACE", "eth0")
 MAX_BANDWIDTH_MBPS = os.getenv("MAX_BANDWIDTH_MBPS", "")
@@ -163,6 +166,76 @@ def update_acl(domains: Iterable[str]) -> None:
         send_runtime(f"add acl allowed_sni {pattern}")
 
 
+def ensure_tls_cert(domains: Iterable[str]) -> None:
+    if not domains:
+        return
+    certs = sorted(CERT_DIR.glob("*.pem"))
+    if not certs:
+        return
+    if any(cert.name != SELF_SIGNED_NAME for cert in certs):
+        return
+    if not _is_self_signed_relay_cert(CERT_DIR / SELF_SIGNED_NAME):
+        return
+    primary = next(iter(domains), "").strip()
+    if not primary:
+        return
+    sanitized_domains = [domain.strip() for domain in domains if domain.strip()]
+    if not sanitized_domains:
+        return
+    _generate_self_signed_cert(primary, sanitized_domains, CERT_DIR / SELF_SIGNED_NAME)
+    subprocess.run(["systemctl", "reload", "haproxy"], check=False)
+
+
+def _is_self_signed_relay_cert(path: Path) -> bool:
+    if not path.exists():
+        return False
+    result = subprocess.run(
+        ["openssl", "x509", "-noout", "-subject", "-in", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    subject = result.stdout.strip()
+    return f"CN = {SELF_SIGNED_CN}" in subject or f"CN={SELF_SIGNED_CN}" in subject
+
+
+def _generate_self_signed_cert(primary: str, domains: list[str], output_path: Path) -> None:
+    CERT_DIR.mkdir(parents=True, exist_ok=True)
+    key_path = output_path.with_suffix(".key")
+    crt_path = output_path.with_suffix(".crt")
+    san_entries = ",".join(f"DNS:{domain}" for domain in domains)
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-nodes",
+            "-newkey",
+            "rsa:2048",
+            "-days",
+            "3650",
+            "-subj",
+            f"/CN={primary}",
+            "-addext",
+            f"subjectAltName={san_entries}",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(crt_path),
+        ],
+        check=False,
+    )
+    if not key_path.exists() or not crt_path.exists():
+        return
+    output_path.write_bytes(key_path.read_bytes() + crt_path.read_bytes())
+    key_path.unlink(missing_ok=True)
+    crt_path.unlink(missing_ok=True)
+    subprocess.run(["chown", "haproxy:haproxy", str(output_path)], check=False)
+    subprocess.run(["chmod", "640", str(output_path)], check=False)
+
+
 def send_runtime(cmd: str) -> str:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.connect(RUNTIME_SOCKET)
@@ -226,6 +299,7 @@ def main() -> None:
             config = fetch_config()
             domains = config.get("domains", [])
             write_domains(domains)
+            ensure_tls_cert(domains)
             ensure_runtime_socket()
             ensure_backends()
             try:

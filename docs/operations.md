@@ -6,6 +6,7 @@ Relay 节点需要终止 TLS 以注入 `X-Forwarded-For`，建议使用 ACME 自
 
 - 推荐使用 `acme.sh` 或 `certbot` 配合 DNS API 自动签发通配证书。
 - 将证书放入 `/etc/haproxy/certs/` 目录，文件格式为 `fullchain.pem + privkey.pem` 拼接。
+- 如果仅存在默认的 `selfsigned.pem`，Agent 会在首次同步域名后用同步到的域名生成带 SAN 的自签证书，并自动 `reload` HAProxy。
 
 示例：
 
