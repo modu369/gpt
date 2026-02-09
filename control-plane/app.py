@@ -278,9 +278,22 @@ def api_metrics():
     payload = request.get_json(silent=True) or {}
     db = get_db()
     db.execute(
-        \"\"\"\n        UPDATE agents\n        SET loadavg = ?, mem_used_mb = ?, rx_bytes = ?, tx_bytes = ?, last_seen = ?\n        WHERE id = ?\n        \"\"\",\n        (\n            payload.get(\"loadavg\"),\n            payload.get(\"mem_used_mb\"),\n            payload.get(\"rx_bytes\"),\n            payload.get(\"tx_bytes\"),\n            datetime.utcnow().isoformat(),\n            agent[\"id\"],\n        ),\n    )
+        """
+        UPDATE agents
+        SET loadavg = ?, mem_used_mb = ?, rx_bytes = ?, tx_bytes = ?, last_seen = ?
+        WHERE id = ?
+        """,
+        (
+            payload.get("loadavg"),
+            payload.get("mem_used_mb"),
+            payload.get("rx_bytes"),
+            payload.get("tx_bytes"),
+            datetime.utcnow().isoformat(),
+            agent["id"],
+        ),
+    )
     db.commit()
-    return jsonify({\"status\": \"ok\"})
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":
