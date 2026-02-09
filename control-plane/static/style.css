@@ -109,6 +109,16 @@ textarea {
   resize: vertical;
 }
 
+.log-box {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 16px;
+  border-radius: 10px;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 12px;
+}
+
 button {
   padding: 8px 12px;
   border: none;

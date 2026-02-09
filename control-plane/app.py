@@ -29,6 +29,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "control.db"
 CERT_STORAGE_DIR = Path(os.getenv("CERT_STORAGE_DIR", str(BASE_DIR / "certs")))
+CERT_LOG_PATH = Path(os.getenv("CERT_LOG_PATH", str(CERT_STORAGE_DIR / "cert.log")))
 
 DEFAULT_ADMIN_USER = os.getenv("CONTROL_ADMIN_USER", "admin")
 DEFAULT_ADMIN_PASS = os.getenv("CONTROL_ADMIN_PASS", "admin123")
@@ -74,6 +75,7 @@ def close_db(exception: Exception | None) -> None:
 def init_db() -> None:
     db = get_db()
     CERT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    CERT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -315,6 +317,15 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
         return None
 
 
+def log_cert_event(domain: str, method: str, status: str, message: str | None = None) -> None:
+    timestamp = datetime.utcnow().isoformat()
+    line = f"{timestamp} | {domain} | {method} | {status}"
+    if message:
+        line = f"{line} | {message}"
+    with CERT_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
 def resolve_domain_ips(domain: str) -> list[str]:
     try:
         results = net_socket.getaddrinfo(domain, None, proto=net_socket.IPPROTO_TCP)
@@ -376,9 +387,12 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
         return "issued", None, None, None, None
     acme_sh = find_acme_sh()
     if not acme_sh:
+        log_cert_event(domain, method, "pending", "等待配置 acme.sh")
         return "pending", None, None, None, "等待配置 acme.sh"
     if method == "dns-01" and not ACME_DNS_PROVIDER:
+        log_cert_event(domain, method, "pending", "缺少 ACME_DNS_PROVIDER 配置")
         return "pending", None, None, None, "缺少 ACME_DNS_PROVIDER 配置"
+    log_cert_event(domain, method, "applying", "开始申请")
     issue_cmd = [
         acme_sh,
         "--issue",
@@ -393,7 +407,9 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
         issue_cmd.append("--standalone")
     result = subprocess.run(issue_cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        return "failed", None, None, None, (result.stderr or result.stdout).strip() or "申请失败"
+        message = (result.stderr or result.stdout).strip() or "申请失败"
+        log_cert_event(domain, method, "failed", message)
+        return "failed", None, None, None, message
     install_dir = CERT_STORAGE_DIR / domain
     install_dir.mkdir(parents=True, exist_ok=True)
     fullchain = install_dir / "fullchain.pem"
@@ -410,10 +426,13 @@ def attempt_issue_cert(domain: str, method: str) -> tuple[str, str | None, str |
     ]
     install_result = subprocess.run(install_cmd, capture_output=True, text=True, check=False)
     if install_result.returncode != 0:
-        return "failed", None, None, None, (install_result.stderr or install_result.stdout).strip() or "安装失败"
+        message = (install_result.stderr or install_result.stdout).strip() or "安装失败"
+        log_cert_event(domain, method, "failed", message)
+        return "failed", None, None, None, message
     issued_at = datetime.utcnow().isoformat()
     expires_at = None
     renew_at = None
+    log_cert_event(domain, method, "issued", "申请成功")
     return "issued", issued_at, expires_at, renew_at, None
 
 
@@ -433,6 +452,7 @@ def auto_issue_certs() -> None:
         if not should_attempt_cert(cert):
             continue
         if not local_domain_check(domain, agent_ips):
+            log_cert_event(domain, cert["method"], "failed", "本地校验失败")
             continue
         upsert_cert_record(domain, cert["method"], "applying", None, None, None, None)
         status, issued_at, expires_at, renew_at, error = attempt_issue_cert(domain, cert["method"])
@@ -870,6 +890,26 @@ def certs(access_key: str | None = None):
     )
 
 
+@app.route("/certs/logs", methods=["GET"])
+@app.route("/<access_key>/certs/logs", methods=["GET"])
+def cert_logs(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    logs = read_cert_logs()
+    return render_template("cert_logs.html", logs=logs)
+
+
+@app.route("/certs/logs/clear", methods=["POST"])
+@app.route("/<access_key>/certs/logs/clear", methods=["POST"])
+def clear_cert_logs(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    CERT_LOG_PATH.write_text("", encoding="utf-8")
+    return redirect(scoped_url("cert_logs"))
+
+
 @app.route("/certs", methods=["POST"])
 @app.route("/<access_key>/certs", methods=["POST"])
 def add_cert(access_key: str | None = None):
@@ -953,6 +993,7 @@ def retry_cert(cert_id: int, access_key: str | None = None):
         return redirect(scoped_url("certs"))
     agent_ips = get_agent_ips()
     if not local_domain_check(cert["domain"], agent_ips):
+        log_cert_event(cert["domain"], cert["method"], "failed", "本地校验失败")
         upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "本地校验失败")
         return redirect(scoped_url("certs"))
     upsert_cert_record(cert["domain"], cert["method"], "applying", None, None, None, None)
@@ -998,6 +1039,7 @@ def auto_issue_cert(access_key: str | None = None):
     if method != "dns-01":
         agent_ips = get_agent_ips()
         if not local_domain_check(domain, agent_ips):
+            log_cert_event(domain, method, "failed", "本地校验失败")
             upsert_cert_record(domain, method, "failed", None, None, None, "本地校验失败")
             return redirect(scoped_url("certs"))
     upsert_cert_record(domain, method, "applying", None, None, None, None)
@@ -1159,6 +1201,14 @@ def fetch_certs(status_filter: str | None = None) -> Iterable[sqlite3.Row]:
             (status_filter,),
         ).fetchall()
     return db.execute("SELECT * FROM certs ORDER BY updated_at DESC, id DESC").fetchall()
+
+
+def read_cert_logs(limit: int = 200) -> list[str]:
+    if not CERT_LOG_PATH.exists():
+        return []
+    with CERT_LOG_PATH.open("r", encoding="utf-8") as handle:
+        lines = handle.readlines()
+    return [line.rstrip("\n") for line in lines[-limit:]]
 
 
 def fetch_cf_ips() -> Iterable[dict]:
