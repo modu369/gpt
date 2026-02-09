@@ -68,6 +68,17 @@
 
       <section class="card">
         <h2>证书列表</h2>
+        <form method="get" action="{{ scoped_url('certs') }}" class="inline-form">
+          <select name="status">
+            <option value="" {% if not status_filter %}selected{% endif %}>全部状态</option>
+            <option value="issued" {% if status_filter == 'issued' %}selected{% endif %}>成功</option>
+            <option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>失败</option>
+            <option value="applying" {% if status_filter == 'applying' %}selected{% endif %}>正在申请</option>
+            <option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>待验证</option>
+            <option value="renewing" {% if status_filter == 'renewing' %}selected{% endif %}>续签中</option>
+          </select>
+          <button type="submit">筛选</button>
+        </form>
         <table>
           <thead>
             <tr>
@@ -103,6 +114,7 @@
                     <option value="issued" {% if cert.status == 'issued' %}selected{% endif %}>已签发</option>
                     <option value="renewing" {% if cert.status == 'renewing' %}selected{% endif %}>续签中</option>
                     <option value="failed" {% if cert.status == 'failed' %}selected{% endif %}>失败</option>
+                    <option value="applying" {% if cert.status == 'applying' %}selected{% endif %}>正在申请</option>
                   </select>
                   <input type="text" name="issued_at" value="{{ cert.issued_at or '' }}" placeholder="申请时间" />
                   <input type="text" name="expires_at" value="{{ cert.expires_at or '' }}" placeholder="到期时间" />

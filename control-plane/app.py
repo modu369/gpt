@@ -278,7 +278,7 @@ def normalize_cert_method(value: str) -> str:
 
 def normalize_cert_status(value: str) -> str:
     cleaned = value.strip().lower()
-    if cleaned in {"pending", "issued", "failed", "renewing"}:
+    if cleaned in {"pending", "issued", "failed", "renewing", "applying"}:
         return cleaned
     return "pending"
 
@@ -360,7 +360,7 @@ def find_acme_sh() -> str | None:
 
 def should_attempt_cert(cert: sqlite3.Row) -> bool:
     status = (cert["status"] or "").strip().lower()
-    if status in {"issued", "renewing"}:
+    if status in {"issued", "renewing", "applying"}:
         return False
     updated_at = parse_iso_datetime(cert["updated_at"])
     if updated_at:
@@ -433,6 +433,7 @@ def auto_issue_certs() -> None:
             continue
         if not local_domain_check(domain, agent_ips):
             continue
+        upsert_cert_record(domain, cert["method"], "applying", None, None, None, None)
         status, issued_at, expires_at, renew_at, error = attempt_issue_cert(domain, cert["method"])
         last_error = None if status == "issued" else (error or cert["last_error"] or "自动申请失败")
         upsert_cert_record(domain, cert["method"], status, issued_at, expires_at, renew_at, last_error)
@@ -826,12 +827,16 @@ def certs(access_key: str | None = None):
     require_access(access_key)
     if not is_logged_in():
         return redirect(scoped_url("login"))
-    cert_rows = fetch_certs()
+    status_filter = request.args.get("status", "").strip().lower() or None
+    if status_filter:
+        status_filter = normalize_cert_status(status_filter)
+    cert_rows = fetch_certs(status_filter)
     domains = fetch_domains()
     return render_template(
         "certs.html",
         certs=cert_rows,
         domains=domains,
+        status_filter=status_filter or "",
     )
 
 
@@ -875,6 +880,8 @@ def update_cert(cert_id: int, access_key: str | None = None):
     expires_at = request.form.get("expires_at", "").strip() or None
     renew_at = request.form.get("renew_at", "").strip() or None
     last_error = request.form.get("last_error", "").strip() or None
+    if status == "issued":
+        last_error = None
     upsert_cert_record(cert["domain"], method, status, issued_at, expires_at, renew_at, last_error)
     return redirect(scoped_url("certs"))
 
@@ -893,6 +900,7 @@ def retry_cert(cert_id: int, access_key: str | None = None):
     if not local_domain_check(cert["domain"], agent_ips):
         upsert_cert_record(cert["domain"], cert["method"], "failed", None, None, None, "本地校验失败")
         return redirect(scoped_url("certs"))
+    upsert_cert_record(cert["domain"], cert["method"], "applying", None, None, None, None)
     status, issued_at, expires_at, renew_at, error = attempt_issue_cert(cert["domain"], cert["method"])
     last_error = None if status == "issued" else (error or "手动重试失败")
     upsert_cert_record(cert["domain"], cert["method"], status, issued_at, expires_at, renew_at, last_error)
@@ -1040,10 +1048,14 @@ def fetch_allowed_domains() -> Iterable[str]:
     return allowed
 
 
-def fetch_certs() -> Iterable[sqlite3.Row]:
-    return get_db().execute(
-        "SELECT * FROM certs ORDER BY updated_at DESC, id DESC"
-    ).fetchall()
+def fetch_certs(status_filter: str | None = None) -> Iterable[sqlite3.Row]:
+    db = get_db()
+    if status_filter:
+        return db.execute(
+            "SELECT * FROM certs WHERE status = ? ORDER BY updated_at DESC, id DESC",
+            (status_filter,),
+        ).fetchall()
+    return db.execute("SELECT * FROM certs ORDER BY updated_at DESC, id DESC").fetchall()
 
 
 def fetch_cf_ips() -> Iterable[dict]:
