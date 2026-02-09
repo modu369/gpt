@@ -31,7 +31,7 @@ SECRET_KEY = os.getenv("CONTROL_SECRET_KEY", secrets.token_hex(16))
 DEFAULT_ACCESS_PATH = os.getenv("CONTROL_ACCESS_PATH", "yun123")
 SCRIPT_BASE_URL = os.getenv(
     "SCRIPT_BASE_URL",
-    "https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system-6h0ek0/scripts",
+    "https://raw.githubusercontent.com/modu369/gpt/codex/fix-cloudflare_http-socket-error/scripts",
 )
 REPO_URL = os.getenv(
     "REPO_URL",
@@ -39,7 +39,7 @@ REPO_URL = os.getenv(
 )
 REPO_REF = os.getenv(
     "REPO_REF",
-    "codex/develop-high-performance-cloudflare-proxy-system-6h0ek0",
+    "codex/fix-cloudflare_http-socket-error",
 )
 
 app = Flask(__name__)
@@ -81,6 +81,18 @@ def init_db() -> None:
             ip TEXT UNIQUE NOT NULL,
             weight INTEGER NOT NULL DEFAULT 100,
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS certs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT UNIQUE NOT NULL,
+            method TEXT NOT NULL,
+            status TEXT NOT NULL,
+            issued_at TEXT,
+            expires_at TEXT,
+            renew_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS agents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +159,7 @@ def init_db() -> None:
         set_setting("control_port", os.getenv("CONTROL_PORT", "8080"))
     if get_setting("access_path") is None:
         set_setting("access_path", DEFAULT_ACCESS_PATH)
+    ensure_cert_records()
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
@@ -244,6 +257,71 @@ def get_agent_value(agent: sqlite3.Row, key: str) -> object | None:
     if key in agent.keys():
         return agent[key]
     return None
+
+
+def normalize_cert_method(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned in {"http-01", "dns-01", "passthrough"}:
+        return cleaned
+    return "http-01"
+
+
+def normalize_cert_status(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned in {"pending", "issued", "failed", "renewing"}:
+        return cleaned
+    return "pending"
+
+
+def ensure_cert_records() -> None:
+    db = get_db()
+    domains = db.execute("SELECT domain FROM domains").fetchall()
+    existing = {
+        row["domain"]
+        for row in db.execute("SELECT domain FROM certs").fetchall()
+    }
+    now = datetime.utcnow().isoformat()
+    for row in domains:
+        domain = row["domain"]
+        if domain in existing:
+            continue
+        db.execute(
+            """
+            INSERT INTO certs (domain, method, status, issued_at, expires_at, renew_at, last_error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (domain, "passthrough", "issued", None, None, None, None, now, now),
+        )
+    db.commit()
+
+
+def upsert_cert_record(
+    domain: str,
+    method: str,
+    status: str,
+    issued_at: str | None = None,
+    expires_at: str | None = None,
+    renew_at: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+    db.execute(
+        """
+        INSERT INTO certs (domain, method, status, issued_at, expires_at, renew_at, last_error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(domain) DO UPDATE SET
+            method = excluded.method,
+            status = excluded.status,
+            issued_at = excluded.issued_at,
+            expires_at = excluded.expires_at,
+            renew_at = excluded.renew_at,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        """,
+        (domain, method, status, issued_at, expires_at, renew_at, last_error, now, now),
+    )
+    db.commit()
 
 
 def compute_saturation(agent: sqlite3.Row) -> tuple[bool, list[str]]:
@@ -470,11 +548,20 @@ def add_domain(access_key: str | None = None):
     domain = request.form.get("domain", "").strip()
     if domain:
         db = get_db()
-        db.execute(
+        result = db.execute(
             "INSERT OR IGNORE INTO domains (domain, created_at) VALUES (?, ?)",
             (domain, datetime.utcnow().isoformat()),
         )
         db.commit()
+        if result.rowcount:
+            upsert_cert_record(domain, "http-01", "pending")
+        else:
+            existing = db.execute(
+                "SELECT domain FROM certs WHERE domain = ?",
+                (domain,),
+            ).fetchone()
+            if existing is None:
+                upsert_cert_record(domain, "http-01", "pending")
     return redirect(scoped_url("settings"))
 
 
@@ -485,7 +572,10 @@ def delete_domain(domain_id: int, access_key: str | None = None):
     if not is_logged_in():
         return redirect(scoped_url("login"))
     db = get_db()
+    domain_row = db.execute("SELECT domain FROM domains WHERE id = ?", (domain_id,)).fetchone()
     db.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
+    if domain_row:
+        db.execute("DELETE FROM certs WHERE domain = ?", (domain_row["domain"],))
     db.commit()
     return redirect(scoped_url("settings"))
 
@@ -581,6 +671,71 @@ def settings(access_key: str | None = None):
     )
 
 
+@app.route("/certs", methods=["GET"])
+@app.route("/<access_key>/certs", methods=["GET"])
+def certs(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    cert_rows = fetch_certs()
+    domains = fetch_domains()
+    return render_template(
+        "certs.html",
+        certs=cert_rows,
+        domains=domains,
+    )
+
+
+@app.route("/certs", methods=["POST"])
+@app.route("/<access_key>/certs", methods=["POST"])
+def add_cert(access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    domain = request.form.get("domain", "").strip()
+    method = normalize_cert_method(request.form.get("method", "http-01"))
+    status = normalize_cert_status(request.form.get("status", "pending"))
+    issued_at = request.form.get("issued_at", "").strip() or None
+    expires_at = request.form.get("expires_at", "").strip() or None
+    renew_at = request.form.get("renew_at", "").strip() or None
+    last_error = request.form.get("last_error", "").strip() or None
+    if domain:
+        upsert_cert_record(domain, method, status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/update", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/update", methods=["POST"])
+def update_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    cert = db.execute("SELECT * FROM certs WHERE id = ?", (cert_id,)).fetchone()
+    if cert is None:
+        return redirect(scoped_url("certs"))
+    method = normalize_cert_method(request.form.get("method", cert["method"]))
+    status = normalize_cert_status(request.form.get("status", cert["status"]))
+    issued_at = request.form.get("issued_at", "").strip() or None
+    expires_at = request.form.get("expires_at", "").strip() or None
+    renew_at = request.form.get("renew_at", "").strip() or None
+    last_error = request.form.get("last_error", "").strip() or None
+    upsert_cert_record(cert["domain"], method, status, issued_at, expires_at, renew_at, last_error)
+    return redirect(scoped_url("certs"))
+
+
+@app.route("/certs/<int:cert_id>/delete", methods=["POST"])
+@app.route("/<access_key>/certs/<int:cert_id>/delete", methods=["POST"])
+def delete_cert(cert_id: int, access_key: str | None = None):
+    require_access(access_key)
+    if not is_logged_in():
+        return redirect(scoped_url("login"))
+    db = get_db()
+    db.execute("DELETE FROM certs WHERE id = ?", (cert_id,))
+    db.commit()
+    return redirect(scoped_url("certs"))
+
+
 @app.route("/settings/access", methods=["POST"])
 @app.route("/<access_key>/settings/access", methods=["POST"])
 def update_access_settings(access_key: str | None = None):
@@ -670,6 +825,32 @@ def fetch_domains() -> Iterable[str]:
     return [row["domain"] for row in rows]
 
 
+def fetch_allowed_domains() -> Iterable[str]:
+    rows = get_db().execute(
+        """
+        SELECT domains.domain AS domain,
+               certs.method AS method,
+               certs.status AS status
+        FROM domains
+        LEFT JOIN certs ON certs.domain = domains.domain
+        """
+    ).fetchall()
+    allowed = []
+    for row in rows:
+        method = (row["method"] or "").strip().lower()
+        status = (row["status"] or "").strip().lower()
+        if method in {"http-01", "dns-01"} and status != "issued":
+            continue
+        allowed.append(row["domain"])
+    return allowed
+
+
+def fetch_certs() -> Iterable[sqlite3.Row]:
+    return get_db().execute(
+        "SELECT * FROM certs ORDER BY updated_at DESC, id DESC"
+    ).fetchall()
+
+
 def fetch_cf_ips() -> Iterable[dict]:
     rows = get_db().execute("SELECT ip, weight FROM cf_ips").fetchall()
     return [{"ip": row["ip"], "weight": row["weight"]} for row in rows]
@@ -689,7 +870,7 @@ def api_config():
     db.commit()
     return jsonify(
         {
-            "domains": list(fetch_domains()),
+            "domains": list(fetch_allowed_domains()),
             "cf_ips": list(fetch_cf_ips()),
         }
     )

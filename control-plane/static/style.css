@@ -90,7 +90,8 @@ h1 {
   margin-bottom: 16px;
 }
 
-input {
+input,
+select {
   flex: 1;
   padding: 8px 10px;
   border-radius: 8px;

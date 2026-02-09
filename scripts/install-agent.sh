@@ -4,7 +4,7 @@ set -euo pipefail
 CONTROL_URL=""
 TOKEN=""
 REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
-REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system-6h0ek0}"
+REPO_REF="${REPO_REF:-codex/fix-cloudflare_http-socket-error}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
