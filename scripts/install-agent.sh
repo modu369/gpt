@@ -51,7 +51,9 @@ if ! ls /etc/haproxy/certs/*.pem >/dev/null 2>&1; then
     -keyout /etc/haproxy/certs/selfsigned.key \
     -out /etc/haproxy/certs/selfsigned.crt
   sudo cat /etc/haproxy/certs/selfsigned.key /etc/haproxy/certs/selfsigned.crt > /etc/haproxy/certs/selfsigned.pem
+  sudo rm -f /etc/haproxy/certs/selfsigned.key /etc/haproxy/certs/selfsigned.crt
 fi
+sudo find /etc/haproxy/certs -type f \\( -name '*.crt' -o -name '*.key' \\) -delete
 sudo chown -R haproxy:haproxy /etc/haproxy/certs /etc/haproxy/maps
 sudo chmod 750 /etc/haproxy/certs /etc/haproxy/maps
 sudo chmod 640 /etc/haproxy/certs/*.pem /etc/haproxy/maps/domains.map
