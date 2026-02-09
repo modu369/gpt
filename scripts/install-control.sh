@@ -50,4 +50,14 @@ SERVICE
 sudo systemctl daemon-reload
 sudo systemctl enable --now cf-relay-control.service
 
+sleep 1
+if ! systemctl is-active --quiet cf-relay-control.service; then
+  echo "控制台服务启动失败，请查看日志：" >&2
+  sudo journalctl -u cf-relay-control.service --no-pager -n 50 >&2
+  exit 1
+fi
+
 echo "控制台已启动: http://<IP>:$CONTROL_PORT"
+echo "默认账号: ${CONTROL_ADMIN_USER:-admin}"
+echo "默认密码: ${CONTROL_ADMIN_PASS:-admin123}"
+echo "如无法访问 8080，请检查安全组/防火墙放行 TCP 8080。"
