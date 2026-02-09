@@ -14,6 +14,12 @@
 
       <section class="grid">
         <div class="card">
+          <h2>主控端安装命令</h2>
+          <p class="hint">在控制机执行以下命令即可完成安装。</p>
+          <textarea readonly rows="4">curl -fsSL {{ script_base_url }}/install-control.sh | REPO_URL={{ repo_url }} bash</textarea>
+        </div>
+
+        <div class="card">
           <h2>域名白名单</h2>
           <form method="post" action="/domains" class="inline-form">
             <input type="text" name="domain" placeholder="example.com" required />
@@ -70,6 +76,14 @@
                 <small>负载: {{ agent.loadavg or '-' }}</small>
                 <small>内存: {{ agent.mem_used_mb or '-' }} MB</small>
                 <small>带宽: RX {{ agent.rx_bytes or '-' }} / TX {{ agent.tx_bytes or '-' }}</small>
+                <div class="commands">
+                  <small>安装命令</small>
+                  <textarea readonly rows="4">curl -fsSL {{ script_base_url }}/install-agent.sh | REPO_URL={{ repo_url }} bash -s -- \
+  --control-url {{ control_url }} \
+  --token {{ agent.token }}</textarea>
+                  <small>卸载命令</small>
+                  <textarea readonly rows="2">curl -fsSL {{ script_base_url }}/uninstall-agent.sh | bash</textarea>
+                </div>
               </div>
               <form method="post" action="/agents/{{ agent.id }}/delete">
                 <button type="submit">删除</button>

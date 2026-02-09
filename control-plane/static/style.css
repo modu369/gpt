@@ -51,6 +51,16 @@ input {
   border: 1px solid #d3d8e0;
 }
 
+textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d3d8e0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
 button {
   padding: 8px 12px;
   border: none;
@@ -84,6 +94,13 @@ li:last-child {
   gap: 4px;
 }
 
+.commands {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .logout {
   text-decoration: none;
   color: #1a73e8;
@@ -96,4 +113,11 @@ li:last-child {
 
 .empty {
   color: #8a94a6;
+}
+
+.hint {
+  color: #5f6b7a;
+  margin-top: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
 }

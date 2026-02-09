@@ -25,6 +25,14 @@ DB_PATH = BASE_DIR / "control.db"
 DEFAULT_ADMIN_USER = os.getenv("CONTROL_ADMIN_USER", "admin")
 DEFAULT_ADMIN_PASS = os.getenv("CONTROL_ADMIN_PASS", "admin123")
 SECRET_KEY = os.getenv("CONTROL_SECRET_KEY", secrets.token_hex(16))
+SCRIPT_BASE_URL = os.getenv(
+    "SCRIPT_BASE_URL",
+    "https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts",
+)
+REPO_URL = os.getenv(
+    "REPO_URL",
+    "https://github.com/modu369/gpt.git",
+)
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -138,7 +146,16 @@ def dashboard():
     domains = db.execute("SELECT * FROM domains ORDER BY id DESC").fetchall()
     cf_ips = db.execute("SELECT * FROM cf_ips ORDER BY id DESC").fetchall()
     agents = db.execute("SELECT * FROM agents ORDER BY id DESC").fetchall()
-    return render_template("dashboard.html", domains=domains, cf_ips=cf_ips, agents=agents)
+    control_url = os.getenv("CONTROL_PUBLIC_URL", request.host_url.rstrip("/"))
+    return render_template(
+        "dashboard.html",
+        domains=domains,
+        cf_ips=cf_ips,
+        agents=agents,
+        control_url=control_url,
+        script_base_url=SCRIPT_BASE_URL,
+        repo_url=REPO_URL,
+    )
 
 
 @app.route("/domains", methods=["POST"])
