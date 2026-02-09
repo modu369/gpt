@@ -18,103 +18,49 @@
       </header>
 
       <section class="card">
-        <h2>新增证书记录</h2>
-        <p class="hint">默认使用验证最快的 HTTP-01。若未验证通过，域名不会下发到被控端进行转发；系统会在域名解析到节点 IP 后自动尝试申请。</p>
-        <form method="post" action="{{ scoped_url('add_cert') }}" class="stack">
-          <label>
-            域名
-            <input type="text" name="domain" placeholder="example.com" list="domain-options" required />
-          </label>
-          <datalist id="domain-options">
-            {% for domain in domains %}
-            <option value="{{ domain }}"></option>
-            {% endfor %}
-          </datalist>
-          <label>
-            验证方式
-            <select name="method">
-              <option value="http-01">HTTP-01（文件验证）</option>
-              <option value="dns-01">DNS-01</option>
-              <option value="passthrough">直通（已有证书）</option>
-            </select>
-          </label>
-          <label>
-            状态
-            <select name="status">
-              <option value="pending">待验证</option>
-              <option value="issued">已签发</option>
-              <option value="renewing">续签中</option>
-              <option value="failed">失败</option>
-            </select>
-          </label>
-          <label>
-            申请时间
-            <input type="text" name="issued_at" placeholder="2024-01-01T12:00:00Z" />
-          </label>
-          <label>
-            到期时间
-            <input type="text" name="expires_at" placeholder="2025-01-01T12:00:00Z" />
-          </label>
-          <label>
-            自动续费时间
-            <input type="text" name="renew_at" placeholder="2024-12-01T12:00:00Z" />
-          </label>
-          <label>
-            失败原因
-            <input type="text" name="last_error" placeholder="验证失败原因" />
-          </label>
-          <button type="submit">保存记录</button>
-        </form>
-        <details>
-          <summary class="secondary">已有证书添加</summary>
-          <form method="post" action="{{ scoped_url('add_existing_cert') }}" class="stack">
-            <label>
-              域名
-              <input type="text" name="domain" placeholder="example.com" required />
-            </label>
-            <label>
-              证书内容 (PEM)
-              <textarea name="cert_text" rows="6" placeholder="-----BEGIN CERTIFICATE-----" required></textarea>
-            </label>
-            <label>
-              私钥内容 (PEM)
-              <textarea name="key_text" rows="6" placeholder="-----BEGIN PRIVATE KEY-----" required></textarea>
-            </label>
-            <button type="submit" class="secondary">确认使用该证书</button>
-          </form>
-        </details>
-        <details>
-          <summary class="secondary">手动输入域名申请</summary>
-          <form method="post" action="{{ scoped_url('auto_issue_cert') }}" class="stack">
-            <label>
-              域名（支持通配符）
-              <input type="text" name="domain" placeholder="example.com 或 *.example.com" required />
-            </label>
-            <label>
-              验证方式
-              <select name="method">
-                <option value="http-01">HTTP-01（文件验证）</option>
-                <option value="dns-01">DNS-01（支持通配符）</option>
-              </select>
-            </label>
-            <button type="submit" class="secondary">立即申请</button>
-          </form>
-        </details>
+        <h2>证书操作</h2>
+        <div class="inline-form">
+          <details>
+            <summary class="secondary">手动申请证书</summary>
+            <form method="post" action="{{ scoped_url('auto_issue_cert') }}" class="stack">
+              <label>
+                域名（支持通配符）
+                <input type="text" name="domain" placeholder="example.com 或 *.example.com" required />
+              </label>
+              <label>
+                验证方式
+                <select name="method">
+                  <option value="http-01">HTTP-01（文件验证）</option>
+                  <option value="dns-01">DNS-01（支持通配符）</option>
+                </select>
+              </label>
+              <button type="submit" class="secondary">开始申请</button>
+            </form>
+          </details>
+          <details>
+            <summary class="secondary">已有证书添加</summary>
+            <form method="post" action="{{ scoped_url('add_existing_cert') }}" class="stack">
+              <label>
+                域名
+                <input type="text" name="domain" placeholder="example.com" required />
+              </label>
+              <label>
+                证书内容 (PEM)
+                <textarea name="cert_text" rows="6" placeholder="-----BEGIN CERTIFICATE-----" required></textarea>
+              </label>
+              <label>
+                私钥内容 (PEM)
+                <textarea name="key_text" rows="6" placeholder="-----BEGIN PRIVATE KEY-----" required></textarea>
+              </label>
+              <button type="submit" class="secondary">确认使用该证书</button>
+            </form>
+          </details>
+        </div>
+        <p class="hint">证书申请仅支持手动触发，可选择 HTTP-01 或 DNS-01（支持泛域名）。</p>
       </section>
 
       <section class="card">
         <h2>证书列表</h2>
-        <form method="get" action="{{ scoped_url('certs') }}" class="inline-form">
-          <select name="status">
-            <option value="" {% if not status_filter %}selected{% endif %}>全部状态</option>
-            <option value="issued" {% if status_filter == 'issued' %}selected{% endif %}>成功</option>
-            <option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>失败</option>
-            <option value="applying" {% if status_filter == 'applying' %}selected{% endif %}>正在申请</option>
-            <option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>待验证</option>
-            <option value="renewing" {% if status_filter == 'renewing' %}selected{% endif %}>续签中</option>
-          </select>
-          <button type="submit">筛选</button>
-        </form>
         <table>
           <thead>
             <tr>
@@ -123,8 +69,6 @@
               <th>状态</th>
               <th>申请时间</th>
               <th>到期时间</th>
-              <th>自动续费时间</th>
-              <th>失败原因</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -136,8 +80,6 @@
               <td>{{ cert.status }}</td>
               <td>{{ cert.issued_at or '-' }}</td>
               <td>{{ cert.expires_at or '-' }}</td>
-              <td>{{ cert.renew_at or '-' }}</td>
-              <td>{{ cert.last_error or '-' }}</td>
               <td>
                 <div class="inline-form">
                   <details class="modal">

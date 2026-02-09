@@ -1310,7 +1310,6 @@ def api_metrics():
             sync_huawei_dns_weights()
         except requests.RequestException:
             pass
-    auto_issue_certs()
     return jsonify({"status": "ok"})
 
 
