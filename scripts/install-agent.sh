@@ -41,6 +41,9 @@ if [ ! -d "$WORK_DIR/agent" ] || [ ! -d "$WORK_DIR/configs" ]; then
 fi
 
 sudo mkdir -p /etc/haproxy/maps /etc/haproxy/certs
+sudo mkdir -p /run/haproxy
+sudo chown haproxy:haproxy /run/haproxy
+sudo chmod 755 /run/haproxy
 sudo touch /etc/haproxy/maps/domains.map
 if ! ls /etc/haproxy/certs/*.pem >/dev/null 2>&1; then
   sudo openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
@@ -53,6 +56,11 @@ sudo chown -R haproxy:haproxy /etc/haproxy/certs /etc/haproxy/maps
 sudo chmod 750 /etc/haproxy/certs /etc/haproxy/maps
 sudo chmod 640 /etc/haproxy/certs/*.pem /etc/haproxy/maps/domains.map
 sudo cp "$WORK_DIR/configs/haproxy.cfg" /etc/haproxy/haproxy.cfg
+
+if ! sudo haproxy -c -f /etc/haproxy/haproxy.cfg; then
+  echo "HAProxy 配置校验失败，请检查 /etc/haproxy/haproxy.cfg" >&2
+  exit 1
+fi
 
 sudo systemctl enable --now haproxy
 
