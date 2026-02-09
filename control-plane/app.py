@@ -33,6 +33,10 @@ REPO_URL = os.getenv(
     "REPO_URL",
     "https://github.com/modu369/gpt.git",
 )
+REPO_REF = os.getenv(
+    "REPO_REF",
+    "codex/develop-high-performance-cloudflare-proxy-system",
+)
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -155,6 +159,7 @@ def dashboard():
         control_url=control_url,
         script_base_url=SCRIPT_BASE_URL,
         repo_url=REPO_URL,
+        repo_ref=REPO_REF,
     )
 
 

@@ -16,7 +16,7 @@
         <div class="card">
           <h2>主控端安装命令</h2>
           <p class="hint">在控制机执行以下命令即可完成安装。</p>
-          <textarea readonly rows="4">curl -fsSL {{ script_base_url }}/install-control.sh | REPO_URL={{ repo_url }} bash</textarea>
+          <textarea readonly rows="5">curl -fsSL {{ script_base_url }}/install-control.sh | REPO_URL={{ repo_url }} REPO_REF={{ repo_ref }} bash</textarea>
         </div>
 
         <div class="card">
@@ -78,7 +78,7 @@
                 <small>带宽: RX {{ agent.rx_bytes or '-' }} / TX {{ agent.tx_bytes or '-' }}</small>
                 <div class="commands">
                   <small>安装命令</small>
-                  <textarea readonly rows="4">curl -fsSL {{ script_base_url }}/install-agent.sh | REPO_URL={{ repo_url }} bash -s -- \
+                  <textarea readonly rows="5">curl -fsSL {{ script_base_url }}/install-agent.sh | REPO_URL={{ repo_url }} REPO_REF={{ repo_ref }} bash -s -- \
   --control-url {{ control_url }} \
   --token {{ agent.token }}</textarea>
                   <small>卸载命令</small>

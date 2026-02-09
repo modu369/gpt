@@ -30,7 +30,8 @@ scripts/         # 一键安装/卸载脚本
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts/install-control.sh | \
-  REPO_URL=https://github.com/modu369/gpt.git bash
+  REPO_URL=https://github.com/modu369/gpt.git \
+  REPO_REF=codex/develop-high-performance-cloudflare-proxy-system bash
 ```
 
 安装完成后访问：`http://<控制机IP>:8080`
@@ -43,7 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-proxy-system/scripts/install-agent.sh | \
-  REPO_URL=https://github.com/modu369/gpt.git bash -s -- \
+  REPO_URL=https://github.com/modu369/gpt.git \
+  REPO_REF=codex/develop-high-performance-cloudflare-proxy-system bash -s -- \
   --control-url http://<控制机IP>:8080 \
   --token <ENROLL_TOKEN>
 ```

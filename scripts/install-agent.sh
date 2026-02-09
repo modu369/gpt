@@ -3,7 +3,8 @@ set -euo pipefail
 
 CONTROL_URL=""
 TOKEN=""
-REPO_URL="${REPO_URL:-https://github.com/your-org/cf-relay.git}"
+REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
+REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,7 +33,12 @@ sudo apt-get install -y haproxy python3 python3-venv python3-pip git
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
-git clone "$REPO_URL" "$WORK_DIR"
+git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$WORK_DIR"
+
+if [ ! -d "$WORK_DIR/agent" ] || [ ! -d "$WORK_DIR/configs" ]; then
+  echo "agent/configs directory not found in repo. Check REPO_URL/REPO_REF." >&2
+  exit 1
+fi
 
 sudo mkdir -p /etc/haproxy/maps /etc/haproxy/certs
 sudo cp "$WORK_DIR/configs/haproxy.cfg" /etc/haproxy/haproxy.cfg

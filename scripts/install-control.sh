@@ -3,14 +3,20 @@ set -euo pipefail
 
 INSTALL_DIR="/opt/cf-relay-control"
 CONTROL_PORT="${CONTROL_PORT:-8080}"
-REPO_URL="${REPO_URL:-https://github.com/your-org/cf-relay.git}"
+REPO_URL="${REPO_URL:-https://github.com/modu369/gpt.git}"
+REPO_REF="${REPO_REF:-codex/develop-high-performance-cloudflare-proxy-system}"
 
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip git
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
-git clone "$REPO_URL" "$WORK_DIR"
+git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$WORK_DIR"
+
+if [ ! -d "$WORK_DIR/control-plane" ]; then
+  echo "control-plane directory not found in repo. Check REPO_URL/REPO_REF." >&2
+  exit 1
+fi
 
 if [ -d "$INSTALL_DIR" ]; then
   sudo rm -rf "$INSTALL_DIR"
