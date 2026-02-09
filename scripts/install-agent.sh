@@ -44,6 +44,9 @@ sudo mkdir -p /etc/haproxy/maps /etc/haproxy/certs
 sudo mkdir -p /run/haproxy
 sudo chown haproxy:haproxy /run/haproxy
 sudo chmod 755 /run/haproxy
+if [ -e /run/haproxy/admin.sock ] && [ ! -S /run/haproxy/admin.sock ]; then
+  sudo rm -rf /run/haproxy/admin.sock
+fi
 sudo touch /etc/haproxy/maps/domains.map
 if ! ls /etc/haproxy/certs/*.pem >/dev/null 2>&1; then
   sudo openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \

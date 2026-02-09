@@ -19,6 +19,16 @@ cat fullchain.pem privkey.pem > /etc/haproxy/certs/example.com.pem
 - Agent 使用 HAProxy Runtime API (`/run/haproxy/admin.sock`) 动态更新，不需要重启进程。
 - Agent 会上报 `loadavg / 内存 / RX-TX` 指标，便于主控端调度和监控。
 
+## 故障排查
+
+- 如果运行 `socat` 提示 `Can't find backend.`，先确认 `/run/haproxy/admin.sock` 是否为 UNIX socket。
+- 若该路径被误建为目录或普通文件，可删除后重启 HAProxy 让其重新创建：
+
+```bash
+sudo rm -rf /run/haproxy/admin.sock
+sudo systemctl restart haproxy
+```
+
 ## 性能建议
 
 - 配置 `net.core.somaxconn` 与 `fs.file-max` 以支持高并发。
