@@ -65,7 +65,6 @@ class DomainIn(BaseModel):
 
 class CfIpIn(BaseModel):
     ip: str
-    port: int = 443
 
 
 class DnsConfigIn(BaseModel):
@@ -119,11 +118,38 @@ def get_system_setting(session: Session) -> SystemSetting:
         session.refresh(cfg)
     return cfg
 
+def _expanded_cf_ips(session: Session) -> list[dict]:
+    rows = session.exec(select(CfIp).where(CfIp.enabled == True)).all()  # noqa: E712
+    result = []
+    for x in rows:
+        result.append({"ip": x.ip, "port": 80})
+        result.append({"ip": x.ip, "port": 443})
+    return result
+
+
+async def push_node_config(node: Node, session: Session) -> dict:
+    whitelist = [d.domain for d in session.exec(select(WhitelistDomain)).all()]
+    cf_ips = _expanded_cf_ips(session)
+    certs = [
+        {"domain": c.domain, "status": c.status, "verify_mode": c.verify_mode}
+        for c in session.exec(select(CertificateRecord)).all()
+    ]
+    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "updated_at": datetime.utcnow().isoformat()}
+
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        r = await client.post(
+            f"{node.endpoint.rstrip('/')}/agent/config",
+            json=payload,
+            headers={"X-Agent-Secret": node.shared_secret},
+        )
+    return {"node": node.name, "status": r.status_code}
+
+
 
 async def push_all_nodes(session: Session) -> dict:
     nodes: List[Node] = session.exec(select(Node).where(Node.enabled == True)).all()  # noqa: E712
     whitelist = [d.domain for d in session.exec(select(WhitelistDomain)).all()]
-    cf_ips = [{"ip": x.ip, "port": x.port} for x in session.exec(select(CfIp).where(CfIp.enabled == True)).all()]  # noqa: E712
+    cf_ips = _expanded_cf_ips(session)
     certs = [
         {"domain": c.domain, "status": c.status, "verify_mode": c.verify_mode}
         for c in session.exec(select(CertificateRecord)).all()
@@ -238,7 +264,7 @@ def create_node_install_commands(
 
 
 @app.post(f"{base}/nodes/register")
-def register_node(data: NodeRegisterIn, session: Session = Depends(get_session)):
+async def register_node(data: NodeRegisterIn, session: Session = Depends(get_session)):
     t = session.exec(select(NodeToken).where(NodeToken.token == data.token, NodeToken.used == False)).first()  # noqa: E712
     if not t:
         raise HTTPException(status_code=403, detail="Invalid token")
@@ -256,7 +282,10 @@ def register_node(data: NodeRegisterIn, session: Session = Depends(get_session))
     node.updated_at = datetime.utcnow()
     session.add(t)
     session.commit()
-    return {"ok": True}
+    try:
+        return {"ok": True, "sync": await push_node_config(node, session)}
+    except Exception as exc:
+        return {"ok": True, "sync_error": str(exc)}
 
 
 @app.post(f"{base}/nodes/{{node_name}}/speedtest")
@@ -355,9 +384,9 @@ def list_domains(_: Admin = Depends(auth), session: Session = Depends(get_sessio
 
 @app.post(f"{base}/cf-ips")
 async def add_cf_ip(data: CfIpIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
-    if session.exec(select(CfIp).where(CfIp.ip == data.ip, CfIp.port == data.port)).first():
+    if session.exec(select(CfIp).where(CfIp.ip == data.ip)).first():
         return {"ok": True, "exists": True}
-    session.add(CfIp(ip=data.ip, port=data.port))
+    session.add(CfIp(ip=data.ip, port=443))
     session.commit()
     await push_all_nodes(session)
     return {"ok": True}
@@ -365,7 +394,8 @@ async def add_cf_ip(data: CfIpIn, _: Admin = Depends(auth), session: Session = D
 
 @app.get(f"{base}/cf-ips")
 def list_cf_ips(_: Admin = Depends(auth), session: Session = Depends(get_session)):
-    return session.exec(select(CfIp).where(CfIp.enabled == True)).all()  # noqa: E712
+    rows = session.exec(select(CfIp).where(CfIp.enabled == True)).all()  # noqa: E712
+    return [{"ip": x.ip, "ports": [80, 443], "enabled": x.enabled} for x in rows]
 
 
 @app.post(f"{base}/dns/config")

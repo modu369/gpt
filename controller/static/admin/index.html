@@ -23,8 +23,8 @@
   <div id="loginBox">
     <div class="title">CF Relay 管理后台登录</div>
     <div class="muted">默认账号 admin / admin123</div>
-    <div class="row" style="margin-top:12px"><input id="username" placeholder="用户名" value="admin" style="flex:1"></div>
-    <div class="row" style="margin-top:8px"><input id="password" type="password" placeholder="密码" value="admin123" style="flex:1"></div>
+    <div class="row" style="margin-top:12px"><input id="username" style="flex:1"></div>
+    <div class="row" style="margin-top:8px"><input id="password" type="password" style="flex:1"></div>
     <div class="row" style="margin-top:12px"><button onclick="login()">登录</button><span id="loginMsg" class="muted"></span></div>
   </div>
 
@@ -54,7 +54,7 @@
 
         <div class="card col-12">
           <h3>节点列表</h3>
-          <table><thead><tr><th>名称</th><th>地址</th><th>在线</th><th>CPU%</th><th>内存MB</th><th>带宽Mbps</th><th>最大带宽测速</th></tr></thead><tbody id="nodesT"></tbody></table>
+          <table><thead><tr><th>名称</th><th>地址</th><th>在线</th><th>CPU%</th><th>内存MB</th><th>带宽Mbps</th><th>最大带宽测速</th><th>卸载</th></tr></thead><tbody id="nodesT"></tbody></table>
         </div>
       </div>
     </div>
@@ -68,7 +68,7 @@
         </div>
         <div class="card col-6"><h3>同步配置</h3><button onclick="syncAll()">立即同步全部配置到所有节点</button><pre id="syncOut" class="muted"></pre></div>
         <div class="card col-6"><h3>域名白名单</h3><div class="row"><input id="domainIn" placeholder="example.com" style="flex:1"><button onclick="addDomain()">添加</button></div><div id="domains" class="muted" style="margin-top:8px"></div></div>
-        <div class="card col-6"><h3>Cloudflare IP 池</h3><div class="row"><input id="cfIpIn" placeholder="1.1.1.1" style="flex:1"><input id="cfPortIn" value="443" style="width:90px"><button onclick="addCfIp()">添加</button></div><div id="cfips" class="muted" style="margin-top:8px"></div></div>
+        <div class="card col-6"><h3>Cloudflare IP 池</h3><div class="row"><input id="cfIpIn" placeholder="1.1.1.1" style="flex:1"><button onclick="addCfIp()">添加</button></div><div id="cfips" class="muted" style="margin-top:8px"></div></div>
       </div>
     </div>
 
@@ -102,21 +102,23 @@ async function refreshAll(){
   drawCircle('cpuCircle',cpuP); drawCircle('memCircle',memP); drawCircle('bwCircle',bwP);
   cpuText.textContent=`已用 ${o.totals?.cpu_used_cores_est||0}/${o.totals?.cpu_cores||0} 核`; memText.textContent=`已用 ${o.totals?.memory_used_mb||0}/${o.totals?.memory_mb||0} MB`; bwText.textContent=`已用 ${o.totals?.bandwidth_used_mbps||0}/${o.totals?.bandwidth_mbps||0} Mbps`;
   const nodes=await api('/nodes',{headers:hdr()});
-  nodesT.innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</td><td><button onclick="speedtestNode('${n.name}')">重测</button></td></tr>`).join('');
+  nodesT.innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</td><td><button onclick="speedtestNode('${n.name}')">重测</button></td><td><button onclick="showUninstallCmd('${n.name}')">卸载命令</button></td></tr>`).join('');
   const domains=await api('/whitelist',{headers:hdr()}); document.getElementById('domains').textContent=domains.map(x=>x.domain).join(', ')||'(空)';
-  const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').textContent=cf.map(x=>`${x.ip}:${x.port}`).join(', ')||'(空)';
+  const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').textContent=cf.map(x=>`${x.ip}:80,443`).join(', ')||'(空)';
   const certs=await api('/certificates',{headers:hdr()}); certT.innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}</td><td><button onclick="retryCert('${c.domain}')">重试</button></td></tr>`).join('');
   const s=await api('/settings',{headers:hdr()}); setPort.value=s.controller_port; setPath.value=s.admin_path; setUser.value=s.default_admin_user; setPwd.value=s.default_admin_password;
 }
 async function createNodeCmd(){const name=(document.getElementById('nodeName').value||'').trim();const msg=document.getElementById('nodeCmdMsg');if(!name){msg.textContent='请先输入节点名称';return;}msg.textContent='生成中...';try{const r=await api('/nodes/onboard',{method:'POST',headers:hdr(),body:JSON.stringify({node_name:name})});document.getElementById('installCmd').value=r.install_command||'';document.getElementById('uninstallCmd').value=r.uninstall_command||'';msg.textContent='生成成功';}catch(e){if(String(e.message||'').includes('Not Found')){try{const t=await api('/node-tokens',{method:'POST',headers:hdr()});const controllerUrl=window.location.origin;const adminPath=panelPath.replace(/^\//,'');document.getElementById('installCmd').value=`bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh -o /tmp/install_agent.sh && chmod +x /tmp/install_agent.sh && /tmp/install_agent.sh --controller ${controllerUrl} --admin-path ${adminPath} --token ${t.token} --node-name ${name}"`;document.getElementById('uninstallCmd').value='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';msg.textContent='生成成功（兼容模式）';return;}catch(e2){msg.textContent='生成失败: '+e2.message;return;}}msg.textContent='生成失败: '+e.message;}}
 async function speedtestNode(name){const r=await api(`/nodes/${name}/speedtest`,{method:'POST',headers:hdr()});alert(`下行:${r.download_mbps} 上行:${r.upload_mbps} 生效最大:${r.effective_mbps}`);refreshAll();}
 async function addDomain(){await api('/whitelist',{method:'POST',headers:hdr(),body:JSON.stringify({domain:domainIn.value})}); refreshAll();}
-async function addCfIp(){await api('/cf-ips',{method:'POST',headers:hdr(),body:JSON.stringify({ip:cfIpIn.value,port:Number(cfPortIn.value||443)})}); refreshAll();}
+async function addCfIp(){await api('/cf-ips',{method:'POST',headers:hdr(),body:JSON.stringify({ip:cfIpIn.value})}); refreshAll();}
 async function saveSettings(){const r=await api('/settings',{method:'POST',headers:hdr(),body:JSON.stringify({controller_port:Number(setPort.value),admin_path:setPath.value,default_admin_user:setUser.value,default_admin_password:setPwd.value})}); setMsg.textContent=r.message;}
 async function applyCert(){await api('/certificates/manual',{method:'POST',headers:hdr(),body:JSON.stringify({domain:certDomain.value,verify_mode:certMode.value})}); refreshAll();}
 async function retryCert(domain){await api(`/certificates/${domain}/retry`,{method:'POST',headers:hdr()}); refreshAll();}
 async function syncAll(){const r=await api('/sync',{method:'POST',headers:hdr()}); syncOut.textContent=JSON.stringify(r,null,2);}
-if(token){document.getElementById('loginBox').style.display='none';document.getElementById('app').style.display='block';refreshAll().catch(()=>logout());}
+async function showUninstallCmd(nodeName){const cmd='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';alert(`节点 ${nodeName} 卸载命令:
+${cmd}`);}
+if(token){document.getElementById('loginBox').style.display='none';document.getElementById('app').style.display='block';refreshAll().catch((e)=>{document.getElementById('loginMsg').textContent='自动刷新失败: '+e.message;});}
 </script>
 </body>
 </html>
