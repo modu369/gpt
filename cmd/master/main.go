@@ -384,10 +384,13 @@ func main() {
 			CFG    common.AgentConfig   `json:"config"`
 		}
 		type ov struct {
-			Rows                                []row     `json:"rows"`
-			TotalCPU, TotalMem, TotalBW, UsedBW float64   `json:"total_cpu,total_mem,total_bw,used_bw"`
-			NodesNeedingScaleHint               bool      `json:"nodes_needing_scale_hint"`
-			Timestamp                           time.Time `json:"timestamp"`
+			Rows                  []row     `json:"rows"`
+			TotalCPU              float64   `json:"total_cpu"`
+			TotalMem              float64   `json:"total_mem"`
+			TotalBW               float64   `json:"total_bw"`
+			UsedBW                float64   `json:"used_bw"`
+			NodesNeedingScaleHint bool      `json:"nodes_needing_scale_hint"`
+			Timestamp             time.Time `json:"timestamp"`
 		}
 		st.mu.RLock()
 		defer st.mu.RUnlock()
@@ -409,6 +412,30 @@ func main() {
 			o.NodesNeedingScaleHint = full == len(o.Rows)
 		}
 		_ = json.NewEncoder(w).Encode(o)
+	})
+
+	mux.HandleFunc(p+"/api/admin/nodes", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r, adminToken, sessions) {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method", 405)
+			return
+		}
+		type row struct {
+			NodeID    string               `json:"node_id"`
+			Heartbeat common.NodeHeartbeat `json:"heartbeat"`
+			Config    common.AgentConfig   `json:"config"`
+		}
+		resp := make([]row, 0)
+		st.mu.RLock()
+		for id, n := range st.Nodes {
+			resp = append(resp, row{NodeID: id, Heartbeat: n.Heartbeat, Config: n.Config})
+		}
+		st.mu.RUnlock()
+		sort.Slice(resp, func(i, j int) bool { return resp[i].NodeID < resp[j].NodeID })
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.HandleFunc(p+"/api/admin/dns/huawei", func(w http.ResponseWriter, r *http.Request) {
@@ -647,12 +674,23 @@ input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
 button{margin-top:14px;width:100%;border:0;background:#2563eb;color:#fff;border-radius:10px;padding:10px 12px;font-weight:600;cursor:pointer}
 .tip{margin-top:10px;font-size:12px;color:#64748b}
 </style></head><body><form class="card" method="post"><p class="logo">CFRelay 控制台</p><div class="sub">请输入主控账号密码登录</div><label>账号</label><input name="username" placeholder="admin" required/><label>密码</label><input name="password" type="password" placeholder="••••••••" required/><button>登录</button><div class="tip">默认账号：admin / admin123</div></form></body></html>`
-const dashboardPage = `<!doctype html><html><body><h2>CFRelay Dashboard</h2><a href='./certs'>证书工单</a><div style='display:flex;gap:16px'><canvas id='cpu' width='120' height='120'></canvas><canvas id='mem' width='120' height='120'></canvas><canvas id='bw' width='120' height='120'></canvas></div><div id='hint' style='color:red'></div><div id='ov'></div><script>
-function pie(id,p,t){const c=document.getElementById(id),x=c.getContext('2d');x.clearRect(0,0,120,120);x.beginPath();x.moveTo(60,60);x.fillStyle='#4caf50';x.arc(60,60,55,-Math.PI/2,-Math.PI/2+Math.PI*2*(p/100));x.fill();x.beginPath();x.moveTo(60,60);x.fillStyle='#ddd';x.arc(60,60,55,-Math.PI/2+Math.PI*2*(p/100),1.5*Math.PI);x.fill();x.fillStyle='#111';x.fillText(t+': '+p.toFixed(1)+'%',20,115)}
-async function load(){const r=await fetch(location.pathname.replace('/dashboard','/api/admin/overview'));const j=await r.json();const cpu=(j.rows.length?j.total_cpu/j.rows.length:0),mem=(j.rows.length?j.total_mem/j.rows.length:0),bw=(j.total_bw?j.used_bw*100/j.total_bw:0);pie('cpu',cpu,'CPU');pie('mem',mem,'MEM');pie('bw',bw,'BW');hint.textContent=j.nodes_needing_scale_hint?'所有节点接近满载，建议新增节点':'';ov.innerHTML=j.rows.map(function(n){return '<details><summary>'+n.node_id+' | CPU '+n.heartbeat.cpu_percent.toFixed(1)+'% | MEM '+n.heartbeat.mem_percent.toFixed(1)+'% | BW '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</summary><pre>'+JSON.stringify(n,null,2)+'</pre></details>'}).join('');}
-load();setInterval(load,3000);
+const dashboardPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>CFRelay Dashboard</title><style>
+body{margin:0;font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0}.wrap{max-width:1180px;margin:0 auto;padding:18px}.top{display:flex;justify-content:space-between;align-items:center}.btn{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px}.muted{color:#94a3b8;font-size:12px}.nodes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.node{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:12px}.node h4{margin:0 0 8px}.k{font-size:12px;color:#94a3b8}.bar{height:8px;background:#1f2a44;border-radius:999px;overflow:hidden}.fill{height:8px;background:#22c55e}
+@media(max-width:900px){.cards,.nodes{grid-template-columns:1fr}}
+</style></head><body><div class='wrap'><div class='top'><h2>CFRelay 控制面板</h2><div><a class='btn' href='./settings'>设置</a> <a class='btn' href='./certs'>证书工单</a></div></div><div id='warn' style='display:none;background:#7f1d1d;border:1px solid #ef4444;padding:10px;border-radius:10px;margin-top:10px'></div><div class='cards'><div class='card'><div>总CPU</div><h3 id='cpu'>0%</h3><div class='muted'>所有节点平均</div></div><div class='card'><div>总内存</div><h3 id='mem'>0%</h3><div class='muted'>所有节点平均</div></div><div class='card'><div>总带宽利用</div><h3 id='bw'>0%</h3><div class='muted'>当前/总上限</div></div></div><h3 style='margin-top:16px'>节点列表</h3><div id='nodes' class='nodes'></div></div><script>
+async function load(){const ov=await (await fetch(location.pathname.replace('/dashboard','/api/admin/overview'))).json();const ns=await (await fetch(location.pathname.replace('/dashboard','/api/admin/nodes'))).json();
+const avg=(arr,key)=>arr.length?arr.reduce((a,b)=>a+(b.heartbeat[key]||0),0)/arr.length:0;cpu.textContent=avg(ns,'cpu_percent').toFixed(1)+'%';mem.textContent=avg(ns,'mem_percent').toFixed(1)+'%';const bwp=ov.total_bw?ov.used_bw*100/ov.total_bw:0;bw.textContent=bwp.toFixed(1)+'%';
+warn.style.display=ov.nodes_needing_scale_hint?'block':'none';warn.textContent='所有节点接近满载，建议新增节点。';
+nodes.innerHTML=ns.map(function(n){return '<div class="node"><h4>'+n.node_id+'</h4><div class="k">CPU '+n.heartbeat.cpu_percent.toFixed(1)+'%</div><div class="bar"><div class="fill" style="width:'+Math.min(100,n.heartbeat.cpu_percent)+'%"></div></div><div class="k">MEM '+n.heartbeat.mem_percent.toFixed(1)+'%</div><div class="bar"><div class="fill" style="width:'+Math.min(100,n.heartbeat.mem_percent)+'%"></div></div><div class="k">带宽 '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</div><div style="margin-top:8px"><button class="btn" onclick="retest(\''+n.node_id+'\')">重测速</button></div><details style="margin-top:8px"><summary>展开高级配置</summary><pre>'+JSON.stringify(n.config,null,2)+'</pre></details></div>';}).join('');}
+async function retest(id){await fetch(location.pathname.replace('/dashboard','/api/admin/node/retest?node_id='+encodeURIComponent(id)),{method:'POST'});alert('已下发重测速到 '+id)}
+load();setInterval(load,4000);
 </script></body></html>`
-const settingsPage = `<!doctype html><html><body><h2>Settings</h2><p>可通过 systemd 环境变量修改端口和 marker。配置 API: /api/admin/node /api/admin/dns/huawei /api/admin/certs</p></body></html>`
+const settingsPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>设置</title><style>body{font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0;margin:0}.wrap{max-width:980px;margin:0 auto;padding:18px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px;margin-bottom:12px}input,textarea{width:100%;box-sizing:border-box;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:10px;padding:8px;margin-top:6px}button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}</style></head><body><div class='wrap'><h2>控制台设置</h2><div class='card'><p>提示：端口/marker/账号密码属于服务环境变量，修改后通过安装脚本会立即重启生效。</p></div><div class='card'><h3>华为云DNS调度</h3><label>Endpoint<input id='ep'/></label><label>Zone ID<input id='zid'/></label><label>RecordSet ID<input id='rid'/></label><label>Scheduler CNAME<input id='cname'/></label><button onclick='saveDNS()'>保存</button> <button onclick='runDNS()'>立即同步</button><pre id='out'></pre></div><a href='./dashboard' style='color:#93c5fd'>返回仪表盘</a></div><script>
+async function init(){const x=await (await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'))).json();ep.value=x.endpoint||'';zid.value=x.zone_id||'';rid.value=x.recordset_id||'';cname.value=x.scheduler_cname||''}
+async function saveDNS(){await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true,endpoint:ep.value,zone_id:zid.value,recordset_id:rid.value,scheduler_cname:cname.value})});out.textContent='保存成功'}
+async function runDNS(){const r=await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'),{method:'POST'});out.textContent=await r.text()}
+init();
+</script></body></html>`
 const certsPage = `<!doctype html><html><body><h2>证书工单</h2><p>支持HTTP与DNS验证工单、重试和本地验证。</p><div><input id='d' placeholder='domain'/><select id='m'><option value='http'>http</option><option value='dns'>dns</option></select><button onclick='create()'>创建工单</button></div><pre id='out'>loading...</pre><script>
 async function list(){const r=await fetch(location.pathname.replace('/certs','/api/admin/certs'));const j=await r.json();out.textContent=JSON.stringify(j,null,2)}
 async function create(){await fetch(location.pathname.replace('/certs','/api/admin/certs'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d.value,method:m.value})});await list()}
