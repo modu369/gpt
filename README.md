@@ -34,6 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 - 后台隐藏入口：`http://<ip>:<port>/<marker>/login`
 - 登录成功后：`/<marker>/dashboard`
 - 证书工单页：`/<marker>/certs`
+- 退出登录：`/<marker>/logout`
 - 可通过 systemd 环境变量定制端口、marker、管理员账号密码。
 
 ## 3) 流量链路和协议支持
@@ -88,6 +89,8 @@ Agent 转发注入：
 ## 10) 华为云国际站 DNS 权重调度
 
 - 提供配置与执行接口：`/api/admin/dns/huawei`
+- 主控设置接口：`/api/admin/settings`（账号/密码即时生效）
+- 节点新增与配置接口：`/api/admin/nodes`（GET/POST）
 - 按节点负载计算权重，暂停或故障节点自动剔除。
 - 当前采用可用的 endpoint 网关执行方式（问题1保持不变）。
 

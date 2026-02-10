@@ -34,17 +34,31 @@ type overloadEvent struct {
 	Dismissed bool      `json:"dismissed"`
 }
 
+type masterSettings struct {
+	AdminUser  string `json:"admin_user"`
+	AdminPass  string `json:"admin_pass"`
+	Listen     string `json:"listen"`
+	Marker     string `json:"marker"`
+	AdminToken string `json:"admin_token"`
+}
+
 type state struct {
 	mu            sync.RWMutex
 	Nodes         map[string]*nodeState      `json:"nodes"`
 	Certs         map[string]common.CertTask `json:"certs"`
 	HuaweiDNS     common.HuaweiDNSConfig     `json:"huawei_dns"`
 	OverloadTable map[string]*overloadEvent  `json:"overload_table"`
+	Settings      masterSettings             `json:"settings"`
 	LastResetYM   string                     `json:"last_reset_ym"`
 }
 
 func newState() *state {
-	return &state{Nodes: map[string]*nodeState{}, Certs: map[string]common.CertTask{}, OverloadTable: map[string]*overloadEvent{}, LastResetYM: time.Now().Format("2006-01")}
+	return &state{
+		Nodes:         map[string]*nodeState{},
+		Certs:         map[string]common.CertTask{},
+		OverloadTable: map[string]*overloadEvent{},
+		LastResetYM:   time.Now().Format("2006-01"),
+	}
 }
 
 func main() {
@@ -59,6 +73,7 @@ func main() {
 
 	st := newState()
 	st.load(dataPath)
+	st.initSettings(listen, marker, adminUser, adminPass, adminToken)
 	go st.schedulerLoop(dataPath)
 
 	sessions := &sync.Map{}
@@ -72,7 +87,7 @@ func main() {
 			_, _ = w.Write([]byte(loginPage))
 			return
 		}
-		if r.FormValue("username") != adminUser || r.FormValue("password") != adminPass {
+		if !st.checkLogin(r.FormValue("username"), r.FormValue("password")) {
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -80,6 +95,13 @@ func main() {
 		sessions.Store(sid, true)
 		http.SetCookie(w, &http.Cookie{Name: "sid", Value: sid, Path: "/", HttpOnly: true, MaxAge: 86400})
 		http.Redirect(w, r, p+"/dashboard", http.StatusFound)
+	})
+	mux.HandleFunc(p+"/logout", func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie("sid"); err == nil {
+			sessions.Delete(c.Value)
+		}
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+		http.Redirect(w, r, p+"/login", http.StatusFound)
 	})
 	mux.HandleFunc(p+"/dashboard", authPage(sessions, p, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -186,7 +208,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/node", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPut {
+		if !isAdmin(r, st.adminToken(), sessions) || r.Method != http.MethodPut {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -210,7 +232,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/node/retest", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
+		if !isAdmin(r, st.adminToken(), sessions) || r.Method != http.MethodPost {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -228,7 +250,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/certs", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) {
+		if !isAdmin(r, st.adminToken(), sessions) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -282,7 +304,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/certs/verify", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
+		if !isAdmin(r, st.adminToken(), sessions) || r.Method != http.MethodPost {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -322,7 +344,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/certs/retry", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
+		if !isAdmin(r, st.adminToken(), sessions) || r.Method != http.MethodPost {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -349,7 +371,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/overloads", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) {
+		if !isAdmin(r, st.adminToken(), sessions) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -374,7 +396,7 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/overview", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) {
+		if !isAdmin(r, st.adminToken(), sessions) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -415,8 +437,28 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/nodes", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) {
+		if !isAdmin(r, st.adminToken(), sessions) {
 			http.Error(w, "forbidden", 403)
+			return
+		}
+		if r.Method == http.MethodPost {
+			var cfg common.AgentConfig
+			_ = json.NewDecoder(r.Body).Decode(&cfg)
+			if cfg.NodeID == "" {
+				http.Error(w, "node_id required", 400)
+				return
+			}
+			st.mu.Lock()
+			n := st.Nodes[cfg.NodeID]
+			if n == nil {
+				n = &nodeState{Token: token(16)}
+				st.Nodes[cfg.NodeID] = n
+			}
+			cfg.UpdatedAt = time.Now()
+			n.Config = cfg
+			st.mu.Unlock()
+			_ = st.save(dataPath)
+			w.WriteHeader(204)
 			return
 		}
 		if r.Method != http.MethodGet {
@@ -438,8 +480,47 @@ func main() {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
+	mux.HandleFunc(p+"/api/admin/settings", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r, st.adminToken(), sessions) {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		if r.Method == http.MethodGet {
+			st.mu.RLock()
+			cfg := st.Settings
+			st.mu.RUnlock()
+			_ = json.NewEncoder(w).Encode(cfg)
+			return
+		}
+		if r.Method == http.MethodPut {
+			var in masterSettings
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			st.mu.Lock()
+			if in.AdminUser != "" {
+				st.Settings.AdminUser = in.AdminUser
+			}
+			if in.AdminPass != "" {
+				st.Settings.AdminPass = in.AdminPass
+			}
+			if in.Listen != "" {
+				st.Settings.Listen = in.Listen
+			}
+			if in.Marker != "" {
+				st.Settings.Marker = strings.Trim(in.Marker, "/")
+			}
+			if in.AdminToken != "" {
+				st.Settings.AdminToken = in.AdminToken
+			}
+			st.mu.Unlock()
+			_ = st.save(dataPath)
+			w.WriteHeader(204)
+			return
+		}
+		http.Error(w, "method", 405)
+	})
+
 	mux.HandleFunc(p+"/api/admin/dns/huawei", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r, adminToken, sessions) {
+		if !isAdmin(r, st.adminToken(), sessions) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -649,6 +730,38 @@ func (s *state) load(path string) {
 		s.OverloadTable = map[string]*overloadEvent{}
 	}
 }
+func (s *state) initSettings(listen, marker, adminUser, adminPass, adminToken string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Settings.AdminUser == "" {
+		s.Settings.AdminUser = adminUser
+	}
+	if s.Settings.AdminPass == "" {
+		s.Settings.AdminPass = adminPass
+	}
+	if s.Settings.Listen == "" {
+		s.Settings.Listen = listen
+	}
+	if s.Settings.Marker == "" {
+		s.Settings.Marker = marker
+	}
+	if s.Settings.AdminToken == "" {
+		s.Settings.AdminToken = adminToken
+	}
+}
+func (s *state) checkLogin(u, p string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return u == s.Settings.AdminUser && p == s.Settings.AdminPass
+}
+func (s *state) adminToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.Settings.AdminToken == "" {
+		return "admin-change-me"
+	}
+	return s.Settings.AdminToken
+}
 func token(n int) string { b := make([]byte, n); _, _ = rand.Read(b); return hex.EncodeToString(b) }
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -674,24 +787,21 @@ input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
 button{margin-top:14px;width:100%;border:0;background:#2563eb;color:#fff;border-radius:10px;padding:10px 12px;font-weight:600;cursor:pointer}
 .tip{margin-top:10px;font-size:12px;color:#64748b}
 </style></head><body><form class="card" method="post"><p class="logo">CFRelay 控制台</p><div class="sub">请输入主控账号密码登录</div><label>账号</label><input name="username" placeholder="admin" required/><label>密码</label><input name="password" type="password" placeholder="••••••••" required/><button>登录</button><div class="tip">默认账号：admin / admin123</div></form></body></html>`
-const dashboardPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>CFRelay Dashboard</title><style>
-body{margin:0;font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0}.wrap{max-width:1180px;margin:0 auto;padding:18px}.top{display:flex;justify-content:space-between;align-items:center}.btn{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px}.muted{color:#94a3b8;font-size:12px}.nodes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.node{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:12px}.node h4{margin:0 0 8px}.k{font-size:12px;color:#94a3b8}.bar{height:8px;background:#1f2a44;border-radius:999px;overflow:hidden}.fill{height:8px;background:#22c55e}
-@media(max-width:900px){.cards,.nodes{grid-template-columns:1fr}}
-</style></head><body><div class='wrap'><div class='top'><h2>CFRelay 控制面板</h2><div><a class='btn' href='./settings'>设置</a> <a class='btn' href='./certs'>证书工单</a></div></div><div id='warn' style='display:none;background:#7f1d1d;border:1px solid #ef4444;padding:10px;border-radius:10px;margin-top:10px'></div><div class='cards'><div class='card'><div>总CPU</div><h3 id='cpu'>0%</h3><div class='muted'>所有节点平均</div></div><div class='card'><div>总内存</div><h3 id='mem'>0%</h3><div class='muted'>所有节点平均</div></div><div class='card'><div>总带宽利用</div><h3 id='bw'>0%</h3><div class='muted'>当前/总上限</div></div></div><h3 style='margin-top:16px'>节点列表</h3><div id='nodes' class='nodes'></div></div><script>
-async function load(){const ov=await (await fetch(location.pathname.replace('/dashboard','/api/admin/overview'))).json();const ns=await (await fetch(location.pathname.replace('/dashboard','/api/admin/nodes'))).json();
-const avg=(arr,key)=>arr.length?arr.reduce((a,b)=>a+(b.heartbeat[key]||0),0)/arr.length:0;cpu.textContent=avg(ns,'cpu_percent').toFixed(1)+'%';mem.textContent=avg(ns,'mem_percent').toFixed(1)+'%';const bwp=ov.total_bw?ov.used_bw*100/ov.total_bw:0;bw.textContent=bwp.toFixed(1)+'%';
-warn.style.display=ov.nodes_needing_scale_hint?'block':'none';warn.textContent='所有节点接近满载，建议新增节点。';
-nodes.innerHTML=ns.map(function(n){return '<div class="node"><h4>'+n.node_id+'</h4><div class="k">CPU '+n.heartbeat.cpu_percent.toFixed(1)+'%</div><div class="bar"><div class="fill" style="width:'+Math.min(100,n.heartbeat.cpu_percent)+'%"></div></div><div class="k">MEM '+n.heartbeat.mem_percent.toFixed(1)+'%</div><div class="bar"><div class="fill" style="width:'+Math.min(100,n.heartbeat.mem_percent)+'%"></div></div><div class="k">带宽 '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</div><div style="margin-top:8px"><button class="btn" onclick="retest(\''+n.node_id+'\')">重测速</button></div><details style="margin-top:8px"><summary>展开高级配置</summary><pre>'+JSON.stringify(n.config,null,2)+'</pre></details></div>';}).join('');}
+const dashboardPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>CFRelay Dashboard</title><style>body{margin:0;font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0}.wrap{max-width:1180px;margin:0 auto;padding:18px}.top{display:flex;justify-content:space-between;align-items:center}.btn{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer;text-decoration:none;display:inline-block}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px}.muted{color:#94a3b8;font-size:12px}.nodes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.node{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:12px}.node h4{margin:0 0 8px}.k{font-size:12px;color:#94a3b8}.bar{height:8px;background:#1f2a44;border-radius:999px;overflow:hidden}.fill{height:8px;background:#22c55e}@media(max-width:900px){.cards,.nodes{grid-template-columns:1fr}}</style></head><body><div class='wrap'><div class='top'><h2>CFRelay 控制面板</h2><div><a class='btn' href='./settings'>设置</a> <a class='btn' href='./certs'>证书管理</a> <a class='btn' href='./logout'>退出账号</a></div></div><div id='warn' style='display:none;background:#7f1d1d;border:1px solid #ef4444;padding:10px;border-radius:10px;margin-top:10px'></div><div class='cards'><div class='card'><div>总CPU</div><h3 id='cpu'>0%</h3><div class='muted'>所有节点平均</div></div><div class='card'><div>总内存</div><h3 id='mem'>0%</h3><div class='muted'>所有节点平均</div></div><div class='card'><div>总带宽利用</div><h3 id='bw'>0%</h3><div class='muted'>当前/总上限</div></div></div><h3 style='margin-top:16px'>节点列表</h3><div id='nodes' class='nodes'></div></div><script>
+async function load(){const ov=await (await fetch(location.pathname.replace('/dashboard','/api/admin/overview'))).json();const ns=await (await fetch(location.pathname.replace('/dashboard','/api/admin/nodes'))).json();const avg=(arr,key)=>arr.length?arr.reduce((a,b)=>a+(b.heartbeat[key]||0),0)/arr.length:0;cpu.textContent=avg(ns,'cpu_percent').toFixed(1)+'%';mem.textContent=avg(ns,'mem_percent').toFixed(1)+'%';const bwp=ov.total_bw?ov.used_bw*100/ov.total_bw:0;bw.textContent=bwp.toFixed(1)+'%';warn.style.display=ov.nodes_needing_scale_hint?'block':'none';warn.textContent='所有节点接近满载，建议新增节点。';nodes.innerHTML=ns.map(function(n){return '<div class="node"><h4>'+n.node_id+'</h4><div class="k">CPU '+n.heartbeat.cpu_percent.toFixed(1)+'%</div><div class="bar"><div class="fill" style="width:'+Math.min(100,n.heartbeat.cpu_percent)+'%"></div></div><div class="k">MEM '+n.heartbeat.mem_percent.toFixed(1)+'%</div><div class="bar"><div class="fill" style="width:'+Math.min(100,n.heartbeat.mem_percent)+'%"></div></div><div class="k">带宽 '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</div><div style="margin-top:8px"><button class="btn" onclick="retest(''+n.node_id+'')">重测速</button></div><details style="margin-top:8px"><summary>展开高级配置</summary><pre>'+JSON.stringify(n.config,null,2)+'</pre></details></div>';}).join('');}
 async function retest(id){await fetch(location.pathname.replace('/dashboard','/api/admin/node/retest?node_id='+encodeURIComponent(id)),{method:'POST'});alert('已下发重测速到 '+id)}
 load();setInterval(load,4000);
 </script></body></html>`
-const settingsPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>设置</title><style>body{font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0;margin:0}.wrap{max-width:980px;margin:0 auto;padding:18px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px;margin-bottom:12px}input,textarea{width:100%;box-sizing:border-box;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:10px;padding:8px;margin-top:6px}button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}</style></head><body><div class='wrap'><h2>控制台设置</h2><div class='card'><p>提示：端口/marker/账号密码属于服务环境变量，修改后通过安装脚本会立即重启生效。</p></div><div class='card'><h3>华为云DNS调度</h3><label>Endpoint<input id='ep'/></label><label>Zone ID<input id='zid'/></label><label>RecordSet ID<input id='rid'/></label><label>Scheduler CNAME<input id='cname'/></label><button onclick='saveDNS()'>保存</button> <button onclick='runDNS()'>立即同步</button><pre id='out'></pre></div><a href='./dashboard' style='color:#93c5fd'>返回仪表盘</a></div><script>
-async function init(){const x=await (await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'))).json();ep.value=x.endpoint||'';zid.value=x.zone_id||'';rid.value=x.recordset_id||'';cname.value=x.scheduler_cname||''}
-async function saveDNS(){await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true,endpoint:ep.value,zone_id:zid.value,recordset_id:rid.value,scheduler_cname:cname.value})});out.textContent='保存成功'}
+const settingsPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>设置</title><style>body{font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0;margin:0}.wrap{max-width:1080px;margin:0 auto;padding:18px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px;margin-bottom:12px}input,textarea,select{width:100%;box-sizing:border-box;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:10px;padding:8px;margin-top:6px}button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:900px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><h2>控制台设置</h2><div class='card'><h3>主控参数</h3><div class='grid'><label>后台账号<input id='au'/></label><label>后台密码<input id='ap'/></label><label>后台端口(展示用途)<input id='ls'/></label><label>后台标识(marker)<input id='mk'/></label></div><button onclick='saveMaster()'>保存主控设置</button></div><div class='card'><h3>节点新增/设置</h3><div class='grid'><label>节点ID<input id='nid' placeholder='relay-bj-01'/></label><label>白名单(逗号分隔)<input id='wl' placeholder='a.com,b.com'/></label><label>Cloudflare转发IP(逗号分隔)<input id='cf' placeholder='1.1.1.1,1.0.0.1'/></label><label>最大带宽Mbps<input id='mbps' value='1000'/></label></div><button onclick='saveNode()'>新增/更新节点</button></div><div class='card'><h3>华为云DNS调度</h3><div class='grid'><label>Endpoint<input id='ep'/></label><label>Zone ID<input id='zid'/></label><label>RecordSet ID<input id='rid'/></label><label>Scheduler CNAME<input id='cname'/></label></div><button onclick='saveDNS()'>保存</button> <button onclick='runDNS()'>立即同步</button><pre id='out'></pre></div><a href='./dashboard' style='color:#93c5fd'>返回仪表盘</a></div><script>
+const split=(v)=>v.split(',').map(x=>x.trim()).filter(Boolean);
+async function init(){const x=await (await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'))).json();ep.value=x.endpoint||'';zid.value=x.zone_id||'';rid.value=x.recordset_id||'';cname.value=x.scheduler_cname||'';const s=await (await fetch(location.pathname.replace('/settings','/api/admin/settings'))).json();au.value=s.admin_user||'';ap.value='';ls.value=s.listen||'';mk.value=s.marker||''}
+async function saveMaster(){await fetch(location.pathname.replace('/settings','/api/admin/settings'),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_user:au.value,admin_pass:ap.value,listen:ls.value,marker:mk.value})});out.textContent='主控设置已保存（账号密码即时生效，端口/marker重启后生效）'}
+async function saveNode(){const body={node_id:nid.value,whitelist:split(wl.value),cf_backends:split(cf.value).map(x=>({address:x})),max_mbps:parseInt(mbps.value||'0',10),auto_cert_when_empty:true,traffic_warn_percent:10,traffic_mode:'both'};const u=location.pathname.replace('/settings','/api/admin/nodes');await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});out.textContent='节点配置已下发，Agent将在几秒内同步'}
+async function saveDNS(){await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true,endpoint:ep.value,zone_id:zid.value,recordset_id:rid.value,scheduler_cname:cname.value})});out.textContent='DNS设置保存成功'}
 async function runDNS(){const r=await fetch(location.pathname.replace('/settings','/api/admin/dns/huawei'),{method:'POST'});out.textContent=await r.text()}
 init();
 </script></body></html>`
-const certsPage = `<!doctype html><html><body><h2>证书工单</h2><p>支持HTTP与DNS验证工单、重试和本地验证。</p><div><input id='d' placeholder='domain'/><select id='m'><option value='http'>http</option><option value='dns'>dns</option></select><button onclick='create()'>创建工单</button></div><pre id='out'>loading...</pre><script>
+const certsPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>证书管理</title><style>body{font-family:Inter,Segoe UI,Arial;background:#0b1220;color:#e2e8f0;margin:0}.wrap{max-width:980px;margin:0 auto;padding:18px}.card{background:#111a2e;border:1px solid #26334f;border-radius:14px;padding:14px;margin-bottom:12px}input,select{width:100%;box-sizing:border-box;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:10px;padding:8px;margin-top:6px}button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}@media(max-width:900px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><h2>证书管理</h2><div class='card'><div class='grid'><label>域名<input id='d' placeholder='example.com'/></label><label>验证方式<select id='m'><option value='http'>HTTP</option><option value='dns'>DNS</option></select></label><label style='display:flex;align-items:end'><button onclick='create()'>创建工单</button></label></div></div><div class='card'><button onclick='list()'>刷新</button><pre id='out' style='white-space:pre-wrap;word-break:break-all'></pre></div><a href='./dashboard' style='color:#93c5fd'>返回仪表盘</a></div><script>
 async function list(){const r=await fetch(location.pathname.replace('/certs','/api/admin/certs'));const j=await r.json();out.textContent=JSON.stringify(j,null,2)}
 async function create(){await fetch(location.pathname.replace('/certs','/api/admin/certs'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d.value,method:m.value})});await list()}
 list();setInterval(list,5000)
