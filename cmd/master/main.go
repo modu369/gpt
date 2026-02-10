@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,12 +44,7 @@ type state struct {
 }
 
 func newState() *state {
-	return &state{
-		Nodes:         map[string]*nodeState{},
-		Certs:         map[string]common.CertTask{},
-		OverloadTable: map[string]*overloadEvent{},
-		LastResetYM:   time.Now().Format("2006-01"),
-	}
+	return &state{Nodes: map[string]*nodeState{}, Certs: map[string]common.CertTask{}, OverloadTable: map[string]*overloadEvent{}, LastResetYM: time.Now().Format("2006-01")}
 }
 
 func main() {
@@ -93,6 +89,10 @@ func main() {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(settingsPage))
 	}))
+	mux.HandleFunc(p+"/certs", authPage(sessions, p, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(certsPage))
+	}))
 
 	mux.HandleFunc(p+"/api/enroll", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("X-Enroll-Key") != enrollKey {
@@ -104,7 +104,7 @@ func main() {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.NodeID == "" {
-			http.Error(w, "node_id required", http.StatusBadRequest)
+			http.Error(w, "node_id required", 400)
 			return
 		}
 		st.mu.Lock()
@@ -131,7 +131,7 @@ func main() {
 		n := st.Nodes[nodeID]
 		st.mu.RUnlock()
 		if n == nil || n.Token != auth {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", 401)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(n.Config)
@@ -145,7 +145,7 @@ func main() {
 		defer st.mu.Unlock()
 		n := st.Nodes[hb.NodeID]
 		if n == nil || n.Token != auth {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", 401)
 			return
 		}
 		hb.Timestamp = time.Now()
@@ -160,14 +160,14 @@ func main() {
 			ev.Count++
 			ev.LastSeen = time.Now()
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc(p+"/api/node/cert", func(w http.ResponseWriter, r *http.Request) {
 		var task common.CertTask
 		_ = json.NewDecoder(r.Body).Decode(&task)
 		if task.Domain == "" || task.ManagedBy == "" {
-			http.Error(w, "bad request", http.StatusBadRequest)
+			http.Error(w, "bad request", 400)
 			return
 		}
 		auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -175,25 +175,25 @@ func main() {
 		n := st.Nodes[task.ManagedBy]
 		st.mu.RUnlock()
 		if n == nil || n.Token != auth {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", 401)
 			return
 		}
 		task.UpdatedAt = time.Now()
 		st.mu.Lock()
-		st.Certs[task.Domain] = task
+		st.Certs[task.Domain] = mergeCertTask(st.Certs[task.Domain], task)
 		st.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc(p+"/api/admin/node", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPut {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			http.Error(w, "forbidden", 403)
 			return
 		}
 		var cfg common.AgentConfig
 		_ = json.NewDecoder(r.Body).Decode(&cfg)
 		if cfg.NodeID == "" {
-			http.Error(w, "node_id required", http.StatusBadRequest)
+			http.Error(w, "node_id required", 400)
 			return
 		}
 		st.mu.Lock()
@@ -206,12 +206,12 @@ func main() {
 		n.Config = cfg
 		st.mu.Unlock()
 		_ = st.save(dataPath)
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc(p+"/api/admin/node/retest", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			http.Error(w, "forbidden", 403)
 			return
 		}
 		nodeID := r.URL.Query().Get("node_id")
@@ -219,12 +219,12 @@ func main() {
 		defer st.mu.Unlock()
 		n := st.Nodes[nodeID]
 		if n == nil {
-			http.Error(w, "node not found", http.StatusNotFound)
+			http.Error(w, "node not found", 404)
 			return
 		}
 		n.Config.RequestSpeedtest = true
 		n.Config.UpdatedAt = time.Now()
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc(p+"/api/admin/certs", func(w http.ResponseWriter, r *http.Request) {
@@ -232,29 +232,120 @@ func main() {
 			http.Error(w, "forbidden", 403)
 			return
 		}
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodGet:
+			st.mu.RLock()
+			arr := make([]common.CertTask, 0, len(st.Certs))
+			for _, c := range st.Certs {
+				arr = append(arr, c)
+			}
+			st.mu.RUnlock()
+			sort.Slice(arr, func(i, j int) bool { return arr[i].UpdatedAt.After(arr[j].UpdatedAt) })
+			_ = json.NewEncoder(w).Encode(arr)
+		case http.MethodPost:
 			var t common.CertTask
 			_ = json.NewDecoder(r.Body).Decode(&t)
-			t.Status = "pending"
+			if t.Domain == "" {
+				http.Error(w, "domain required", 400)
+				return
+			}
+			if t.Method == "" {
+				t.Method = common.CertMethodHTTP
+			}
 			t.UpdatedAt = time.Now()
+			t.Status = "pending"
+			if t.Method == common.CertMethodHTTP {
+				t.Files = []common.ACMEChallengeFile{{Domain: t.Domain, Token: token(12), Content: token(18), UpdatedAt: time.Now()}}
+				t.Status = "pending_http_sync"
+			}
+			if t.Method == common.CertMethodDNS {
+				t.DNSName = "_acme-challenge." + t.Domain
+				t.DNSValue = "cfrelay-" + token(10)
+				t.Status = "pending_dns_user"
+			}
 			st.mu.Lock()
+			t.ManagedBy = "master"
 			st.Certs[t.Domain] = t
-			for _, n := range st.Nodes {
+			if t.Method == common.CertMethodHTTP {
+				st.distributeHTTPChallengeLocked(t.Domain)
+			}
+			for id, n := range st.Nodes {
 				n.Config.CertRetryDomains = appendUnique(n.Config.CertRetryDomains, t.Domain)
 				n.Config.UpdatedAt = time.Now()
+				_ = id
 			}
 			st.mu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(204)
+		default:
+			http.Error(w, "method", 405)
+		}
+	})
+
+	mux.HandleFunc(p+"/api/admin/certs/verify", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
+			http.Error(w, "forbidden", 403)
 			return
 		}
-		st.mu.RLock()
-		defer st.mu.RUnlock()
-		arr := make([]common.CertTask, 0, len(st.Certs))
-		for _, c := range st.Certs {
-			arr = append(arr, c)
+		domain := r.URL.Query().Get("domain")
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		t := st.Certs[domain]
+		if t.Domain == "" {
+			http.Error(w, "task not found", 404)
+			return
 		}
-		sort.Slice(arr, func(i, j int) bool { return arr[i].UpdatedAt.After(arr[j].UpdatedAt) })
-		_ = json.NewEncoder(w).Encode(arr)
+		if t.Method == common.CertMethodDNS {
+			txts, _ := net.LookupTXT(t.DNSName)
+			ok := false
+			for _, v := range txts {
+				if strings.TrimSpace(v) == strings.TrimSpace(t.DNSValue) {
+					ok = true
+					break
+				}
+			}
+			if ok {
+				t.LocalVerified = true
+				t.Status = "local_verified"
+			} else {
+				t.Status = "dns_not_propagated"
+				t.LastError = "TXT not found"
+			}
+		}
+		if t.Method == common.CertMethodHTTP {
+			t.Status = "local_verified"
+			t.LocalVerified = true
+			st.distributeHTTPChallengeLocked(domain)
+		}
+		t.UpdatedAt = time.Now()
+		st.Certs[domain] = t
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc(p+"/api/admin/certs/retry", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		domain := r.URL.Query().Get("domain")
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		t := st.Certs[domain]
+		if t.Domain == "" {
+			http.Error(w, "task not found", 404)
+			return
+		}
+		t.RetryCount++
+		t.Status = "retrying"
+		t.UpdatedAt = time.Now()
+		st.Certs[domain] = t
+		if t.Method == common.CertMethodHTTP {
+			st.distributeHTTPChallengeLocked(domain)
+		}
+		for _, n := range st.Nodes {
+			n.Config.CertRetryDomains = appendUnique(n.Config.CertRetryDomains, domain)
+			n.Config.UpdatedAt = time.Now()
+		}
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc(p+"/api/admin/overloads", func(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +360,7 @@ func main() {
 				ev.Dismissed = true
 			}
 			st.mu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(204)
 			return
 		}
 		st.mu.RLock()
@@ -293,13 +384,10 @@ func main() {
 			CFG    common.AgentConfig   `json:"config"`
 		}
 		type ov struct {
-			Rows                  []row     `json:"rows"`
-			TotalCPU              float64   `json:"total_cpu"`
-			TotalMem              float64   `json:"total_mem"`
-			TotalBW               float64   `json:"total_bw"`
-			UsedBW                float64   `json:"used_bw"`
-			NodesNeedingScaleHint bool      `json:"nodes_needing_scale_hint"`
-			Timestamp             time.Time `json:"timestamp"`
+			Rows                                []row     `json:"rows"`
+			TotalCPU, TotalMem, TotalBW, UsedBW float64   `json:"total_cpu,total_mem,total_bw,used_bw"`
+			NodesNeedingScaleHint               bool      `json:"nodes_needing_scale_hint"`
+			Timestamp                           time.Time `json:"timestamp"`
 		}
 		st.mu.RLock()
 		defer st.mu.RUnlock()
@@ -335,7 +423,7 @@ func main() {
 			st.HuaweiDNS = c
 			st.mu.Unlock()
 			_ = st.save(dataPath)
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(204)
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -356,6 +444,54 @@ func main() {
 	log.Fatal(http.ListenAndServe(listen, logReq(mux)))
 }
 
+func mergeCertTask(old, new common.CertTask) common.CertTask {
+	if old.Domain == "" {
+		return new
+	}
+	if new.Method == "" {
+		new.Method = old.Method
+	}
+	if len(new.Files) == 0 {
+		new.Files = old.Files
+	}
+	if new.DNSName == "" {
+		new.DNSName = old.DNSName
+	}
+	if new.DNSValue == "" {
+		new.DNSValue = old.DNSValue
+	}
+	if new.RetryCount == 0 {
+		new.RetryCount = old.RetryCount
+	}
+	if !new.LocalVerified {
+		new.LocalVerified = old.LocalVerified
+	}
+	return new
+}
+
+func (s *state) distributeHTTPChallengeLocked(domain string) {
+	t := s.Certs[domain]
+	if len(t.Files) == 0 {
+		t.Files = []common.ACMEChallengeFile{{Domain: domain, Token: token(12), Content: token(18), UpdatedAt: time.Now()}}
+		s.Certs[domain] = t
+	}
+	for _, n := range s.Nodes {
+		for _, f := range t.Files {
+			n.Config.ACMEChallengeFiles = appendChallenge(n.Config.ACMEChallengeFiles, f)
+		}
+		n.Config.UpdatedAt = time.Now()
+	}
+}
+
+func appendChallenge(arr []common.ACMEChallengeFile, v common.ACMEChallengeFile) []common.ACMEChallengeFile {
+	for i := range arr {
+		if arr[i].Token == v.Token && arr[i].Domain == v.Domain {
+			arr[i] = v
+			return arr
+		}
+	}
+	return append(arr, v)
+}
 func appendUnique(arr []string, v string) []string {
 	for _, a := range arr {
 		if strings.EqualFold(a, v) {
@@ -398,7 +534,6 @@ func (s *state) syncHuaweiDNS() (map[string]any, error) {
 	}
 	return map[string]any{"ok": true, "weights": weights}, nil
 }
-
 func (s *state) schedulerLoop(path string) {
 	for range time.Tick(12 * time.Second) {
 		_ = s.save(path)
@@ -406,7 +541,6 @@ func (s *state) schedulerLoop(path string) {
 		_, _ = s.syncHuaweiDNS()
 	}
 }
-
 func (s *state) maybeMonthlyReset() error {
 	ym := time.Now().Format("2006-01")
 	s.mu.Lock()
@@ -421,7 +555,6 @@ func (s *state) maybeMonthlyReset() error {
 	s.LastResetYM = ym
 	return nil
 }
-
 func overloadReason(h common.NodeHeartbeat) string {
 	if h.CPUPercent >= 95 {
 		return "cpu"
@@ -434,7 +567,6 @@ func overloadReason(h common.NodeHeartbeat) string {
 	}
 	return ""
 }
-
 func pct(v, max float64) float64 {
 	if max <= 0 {
 		return 0
@@ -505,10 +637,14 @@ func logReq(next http.Handler) http.Handler {
 }
 
 const loginPage = `<!doctype html><html><body><h3>CFRelay Login</h3><form method="post"><input name="username" placeholder="user"/><input name="password" type="password" placeholder="password"/><button>Login</button></form></body></html>`
-const dashboardPage = `<!doctype html><html><body><h2>CFRelay Dashboard</h2><div style='display:flex;gap:16px'><canvas id='cpu' width='120' height='120'></canvas><canvas id='mem' width='120' height='120'></canvas><canvas id='bw' width='120' height='120'></canvas></div><div id='hint' style='color:red'></div><div id='ov'></div><script>
+const dashboardPage = `<!doctype html><html><body><h2>CFRelay Dashboard</h2><a href='./certs'>证书工单</a><div style='display:flex;gap:16px'><canvas id='cpu' width='120' height='120'></canvas><canvas id='mem' width='120' height='120'></canvas><canvas id='bw' width='120' height='120'></canvas></div><div id='hint' style='color:red'></div><div id='ov'></div><script>
 function pie(id,p,t){const c=document.getElementById(id),x=c.getContext('2d');x.clearRect(0,0,120,120);x.beginPath();x.moveTo(60,60);x.fillStyle='#4caf50';x.arc(60,60,55,-Math.PI/2,-Math.PI/2+Math.PI*2*(p/100));x.fill();x.beginPath();x.moveTo(60,60);x.fillStyle='#ddd';x.arc(60,60,55,-Math.PI/2+Math.PI*2*(p/100),1.5*Math.PI);x.fill();x.fillStyle='#111';x.fillText(t+': '+p.toFixed(1)+'%',20,115)}
 async function load(){const r=await fetch(location.pathname.replace('/dashboard','/api/admin/overview'));const j=await r.json();const cpu=(j.rows.length?j.total_cpu/j.rows.length:0),mem=(j.rows.length?j.total_mem/j.rows.length:0),bw=(j.total_bw?j.used_bw*100/j.total_bw:0);pie('cpu',cpu,'CPU');pie('mem',mem,'MEM');pie('bw',bw,'BW');hint.textContent=j.nodes_needing_scale_hint?'所有节点接近满载，建议新增节点':'';ov.innerHTML=j.rows.map(function(n){return '<details><summary>'+n.node_id+' | CPU '+n.heartbeat.cpu_percent.toFixed(1)+'% | MEM '+n.heartbeat.mem_percent.toFixed(1)+'% | BW '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</summary><pre>'+JSON.stringify(n,null,2)+'</pre></details>'}).join('');}
 load();setInterval(load,3000);
 </script></body></html>`
-
-const settingsPage = `<!doctype html><html><body><h2>Settings</h2><p>可通过 systemd 环境变量修改端口和 marker。配置 API: /api/admin/node /api/admin/dns/huawei</p></body></html>`
+const settingsPage = `<!doctype html><html><body><h2>Settings</h2><p>可通过 systemd 环境变量修改端口和 marker。配置 API: /api/admin/node /api/admin/dns/huawei /api/admin/certs</p></body></html>`
+const certsPage = `<!doctype html><html><body><h2>证书工单</h2><p>支持HTTP与DNS验证工单、重试和本地验证。</p><div><input id='d' placeholder='domain'/><select id='m'><option value='http'>http</option><option value='dns'>dns</option></select><button onclick='create()'>创建工单</button></div><pre id='out'>loading...</pre><script>
+async function list(){const r=await fetch(location.pathname.replace('/certs','/api/admin/certs'));const j=await r.json();out.textContent=JSON.stringify(j,null,2)}
+async function create(){await fetch(location.pathname.replace('/certs','/api/admin/certs'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d.value,method:m.value})});await list()}
+list();setInterval(list,5000)
+</script></body></html>`

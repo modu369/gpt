@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -142,6 +143,7 @@ func (rt *runtime) syncLoop(ctx context.Context, master, token, nodeID string) {
 				rt.mu.Lock()
 				rt.cfg = cfg
 				rt.backends = cfg.CFBackends
+				syncChallengeFiles(env("AGENT_ACME_WEBROOT", "/var/lib/cfrelay/acme"), cfg.ACMEChallengeFiles)
 				if cfg.MaxMbps > 0 {
 					rt.maxBandwidth = float64(cfg.MaxMbps)
 				}
@@ -323,6 +325,17 @@ func (rt *runtime) renewLoop() {
 			continue
 		}
 		_ = exec.Command("certbot", "renew", "--non-interactive").Run()
+	}
+}
+
+func syncChallengeFiles(webroot string, files []common.ACMEChallengeFile) {
+	base := filepath.Join(webroot, ".well-known", "acme-challenge")
+	_ = os.MkdirAll(base, 0o755)
+	for _, f := range files {
+		if f.Token == "" {
+			continue
+		}
+		_ = os.WriteFile(filepath.Join(base, f.Token), []byte(f.Content), 0o644)
 	}
 }
 

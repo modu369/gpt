@@ -1,6 +1,6 @@
 # Cloudflare IP 转发系统（Master / Agent）
 
-本版本重点：高性能转发 + 鉴权 + 真实IP透传 + 多节点调度控制。
+本版本重点：高性能转发 + 鉴权 + 真实IP透传 + 多节点调度控制 + 证书工单补齐。
 
 ## 1) Debian12 一键安装 / 卸载
 
@@ -26,15 +26,8 @@ curl -fsSL https://raw.githubusercontent.com/your-org/cfrelay/main/scripts/unins
 
 - 后台隐藏入口：`http://<ip>:<port>/<marker>/login`
 - 登录成功后：`/<marker>/dashboard`
+- 证书工单页：`/<marker>/certs`
 - 可通过 systemd 环境变量定制端口、marker、管理员账号密码。
-
-默认环境变量（master）：
-- `MASTER_LISTEN=:8080`
-- `MASTER_MARKER=tianyun123`
-- `MASTER_ADMIN_USER=admin`
-- `MASTER_ADMIN_PASS=change-me`
-- `MASTER_ENROLL_KEY=change-me`
-- `MASTER_ADMIN_TOKEN=admin-change-me`
 
 ## 3) 流量链路和协议支持
 
@@ -53,8 +46,6 @@ Agent 转发注入：
 - `X-Forwarded-For`
 - `X-Real-IP`
 - `X-Relay-Real-IP`
-
-建议在 Cloudflare Worker/Transform Rule 回写到源站识别头。
 
 ## 6) 优选IP健康检查 / 负载均衡
 
@@ -79,20 +70,19 @@ Agent 转发注入：
 
 主控按月自动重置暂停状态（恢复节点可用）。
 
-## 9) 证书管理
+## 9) 证书管理（本轮补齐）
 
-- 首次访问允许域名触发证书任务。
-- 支持 certbot webroot 申请 (`AGENT_CERTBOT=1`) 与自动 renew。
-- 验证文件路径由 Agent 在 `/.well-known/acme-challenge/*` 提供。
-- 证书任务状态同步到主控 `/api/admin/certs`。
-- 管理员可 POST 新证书任务并触发 Agent 重试。
+- 支持 HTTP/DNS 两种证书工单创建。
+- HTTP工单：主控生成 challenge 文件并同步到所有 Agent，Agent 自动落盘到 `/.well-known/acme-challenge/`。
+- DNS工单：主控生成 `_acme-challenge.<domain>` 与 TXT 值，用户配置后可在工单接口触发本地校验。
+- 工单支持重试：触发后会同步到所有节点并再次尝试。
+- Agent 仍支持 certbot webroot 自动申请与 renew（`AGENT_CERTBOT=1`）。
 
 ## 10) 华为云国际站 DNS 权重调度
 
 - 提供配置与执行接口：`/api/admin/dns/huawei`
 - 按节点负载计算权重，暂停或故障节点自动剔除。
-- 可配置调度 CNAME。
-- 支持向 `endpoint` 发送同步请求（携带 AK/SK header）。
+- 当前采用可用的 endpoint 网关执行方式（问题1保持不变）。
 
 详见 `docs/huawei-dns-weight-sync.md`。
 
