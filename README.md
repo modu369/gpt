@@ -6,7 +6,7 @@
 
 ### 主控安装
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-org/cfrelay/main/scripts/install-master.sh | bash
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-master.sh | bash
 ```
 
 ### 被控安装（需主控 enrollment key）
@@ -14,12 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/your-org/cfrelay/main/scripts/insta
 MASTER_URL='http://<master-ip>:8080/<marker>' \
 ENROLL_KEY='change-me' \
 NODE_ID='relay-bj-01' \
-curl -fsSL https://raw.githubusercontent.com/your-org/cfrelay/main/scripts/install-agent.sh | bash
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-agent.sh | bash
 ```
 
 ### 卸载
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-org/cfrelay/main/scripts/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/uninstall.sh | bash
 ```
 
 ## 2) 主控/被控分离 + 可视化后台
@@ -90,3 +90,6 @@ Agent 转发注入：
 
 - 主控配置下发通过 Agent 3 秒轮询获取，实时热更新，无需重启服务进程。
 - 安装脚本会直接拉起 systemd 服务并立即生效。
+
+
+项目地址：`https://github.com/modu369/gpt/tree/codex/develop-high-performance-cloudflare-ip-forwarding-system`

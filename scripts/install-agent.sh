@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REPO_URL=${REPO_URL:-https://github.com/your-org/cfrelay.git}
+REPO_URL=${REPO_URL:-https://github.com/modu369/gpt.git}
+REPO_BRANCH=${REPO_BRANCH:-codex}
+PROJECT_SUBDIR=${PROJECT_SUBDIR:-develop-high-performance-cloudflare-ip-forwarding-system}
 INSTALL_DIR=${INSTALL_DIR:-/opt/cfrelay}
 
 if [[ -z "${MASTER_URL:-}" || -z "${ENROLL_KEY:-}" || -z "${NODE_ID:-}" ]]; then
@@ -11,8 +13,8 @@ fi
 apt-get update
 apt-get install -y git curl golang ca-certificates ethtool certbot speedtest-cli
 rm -rf "$INSTALL_DIR"
-git clone "$REPO_URL" "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+git clone -b "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
+cd "$INSTALL_DIR/$PROJECT_SUBDIR"
 go build -o /usr/local/bin/cfrelay-agent ./cmd/agent
 install -m 644 systemd/cfrelay-agent.service /etc/systemd/system/cfrelay-agent.service
 
