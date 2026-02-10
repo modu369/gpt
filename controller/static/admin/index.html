@@ -47,7 +47,7 @@
 
         <div class="card col-12">
           <h3>新增节点（自动生成一键安装/卸载命令）</h3>
-          <div class="row"><input id="nodeName" placeholder="节点名称" style="flex:1"><button onclick="createNodeCmd()">生成命令</button></div>
+          <div class="row"><input id="nodeName" placeholder="节点名称" style="flex:1"><button onclick="createNodeCmd()">生成命令</button><span id="nodeCmdMsg" class="muted"></span></div>
           <div class="muted" style="margin-top:8px">安装命令</div><textarea id="installCmd" readonly></textarea>
           <div class="muted" style="margin-top:8px">卸载命令</div><textarea id="uninstallCmd" readonly></textarea>
         </div>
@@ -108,7 +108,7 @@ async function refreshAll(){
   const certs=await api('/certificates',{headers:hdr()}); certT.innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}</td><td><button onclick="retryCert('${c.domain}')">重试</button></td></tr>`).join('');
   const s=await api('/settings',{headers:hdr()}); setPort.value=s.controller_port; setPath.value=s.admin_path; setUser.value=s.default_admin_user; setPwd.value=s.default_admin_password;
 }
-async function createNodeCmd(){const r=await api('/nodes/onboard',{method:'POST',headers:hdr(),body:JSON.stringify({node_name:nodeName.value})});installCmd.value=r.install_command;uninstallCmd.value=r.uninstall_command;}
+async function createNodeCmd(){const name=(document.getElementById('nodeName').value||'').trim();const msg=document.getElementById('nodeCmdMsg');if(!name){msg.textContent='请先输入节点名称';return;}msg.textContent='生成中...';try{const r=await api('/nodes/onboard',{method:'POST',headers:hdr(),body:JSON.stringify({node_name:name})});document.getElementById('installCmd').value=r.install_command||'';document.getElementById('uninstallCmd').value=r.uninstall_command||'';msg.textContent='生成成功';}catch(e){msg.textContent='生成失败: '+e.message;}}
 async function speedtestNode(name){const r=await api(`/nodes/${name}/speedtest`,{method:'POST',headers:hdr()});alert(`下行:${r.download_mbps} 上行:${r.upload_mbps} 生效最大:${r.effective_mbps}`);refreshAll();}
 async function addDomain(){await api('/whitelist',{method:'POST',headers:hdr(),body:JSON.stringify({domain:domainIn.value})}); refreshAll();}
 async function addCfIp(){await api('/cf-ips',{method:'POST',headers:hdr(),body:JSON.stringify({ip:cfIpIn.value,port:Number(cfPortIn.value||443)})}); refreshAll();}
