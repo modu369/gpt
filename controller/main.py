@@ -1,10 +1,11 @@
 from datetime import datetime
+from pathlib import Path
 import secrets
 from typing import List
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -107,23 +108,15 @@ def panel_healthz():
 
 @app.get(f"/{settings.admin_path}", response_class=HTMLResponse)
 def panel_entry():
-    return f"""
-<!doctype html>
-<html><head><meta charset="utf-8"><title>CF Relay Panel</title></head>
-<body style="font-family:Arial;max-width:760px;margin:40px auto;line-height:1.6">
-  <h2>CF Relay Controller Panel</h2>
-  <p>控制台入口已生效：<code>/{settings.admin_path}</code></p>
-  <p>API 基础路径：<code>/{settings.admin_path}/api</code></p>
-  <p>你可以先调用登录接口获取 JWT：</p>
-  <pre>POST /{settings.admin_path}/api/auth/login</pre>
-  <p><a href="/{settings.admin_path}/api/docs">打开 Swagger API 文档</a></p>
-</body></html>
-"""
+    page = Path(__file__).parent / "static" / "admin" / "index.html"
+    return FileResponse(page)
 
 
 @app.get(f"/{settings.admin_path}/", response_class=HTMLResponse)
 def panel_entry_slash():
-    return panel_entry()
+    page = Path(__file__).parent / "static" / "admin" / "index.html"
+    return FileResponse(page)
+
 
 @app.post(f"{base}/auth/login", response_model=TokenOut)
 def login(data: LoginIn, session: Session = Depends(get_session)):

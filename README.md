@@ -44,10 +44,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
 
 ## 访问入口
 
-- 控制台入口：`http://<controller-ip>:8080/<admin_path>`
+- 控制台入口：`http://<controller-ip>:8080/<admin_path>`（可视化后台登录页）
 - API 基础：`http://<controller-ip>:8080/<admin_path>/api`
 - API 文档：`http://<controller-ip>:8080/<admin_path>/api/docs`
 - 健康检查：`http://<controller-ip>:8080/<admin_path>/healthz`
+
+## 可视化后台能力
+
+- 登录鉴权（JWT）
+- 节点总览（CPU/内存/带宽）
+- 节点列表
+- 域名白名单管理
+- Cloudflare IP 池管理
+- 华为云 DNS 配置与调度执行
+- 证书列表、手动申请与重试
+- 一键同步配置到全部节点
 
 ## 主要 API
 
