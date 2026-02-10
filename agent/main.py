@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import httpx
@@ -70,6 +71,42 @@ def cert_apply(data: CertApplyIn, x_agent_secret: str = Header(default="")):
     return {"ok": True, "status": status, "detail": detail}
 
 
+@app.post("/agent/network/speedtest")
+def speedtest(x_agent_secret: str = Header(default="")):
+    if x_agent_secret != settings.shared_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    download, upload = _speedtest_snapshot()
+    return {
+        "download_mbps": download,
+        "upload_mbps": upload,
+        "effective_mbps": int(min(download, upload)),
+    }
+
+
+def _speedtest_snapshot() -> tuple[float, float]:
+    # preferred: speedtest-cli
+    if shutil_which("speedtest-cli"):
+        try:
+            r = subprocess.run(["speedtest-cli", "--simple"], capture_output=True, text=True, timeout=60)
+            if r.returncode == 0:
+                down = 0.0
+                up = 0.0
+                for line in r.stdout.splitlines():
+                    if line.startswith("Download"):
+                        down = float(line.split()[1])
+                    if line.startswith("Upload"):
+                        up = float(line.split()[1])
+                if down > 0 and up > 0:
+                    return down, up
+        except Exception:
+            pass
+    return 100.0, 100.0
+
+
+def shutil_which(cmd: str) -> bool:
+    return subprocess.call(["bash", "-lc", f"command -v {cmd}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+
 def save_cert_state(domain: str, status: str, detail: str) -> None:
     path = Path(settings.state_dir) / "cert_state.json"
     state = {}
@@ -84,7 +121,6 @@ def save_cert_state(domain: str, status: str, detail: str) -> None:
 
 def _metric_snapshot() -> dict:
     cpu = 0.0
-    # simple fallback: load average / cores
     try:
         load1 = os.getloadavg()[0]
         cores = os.cpu_count() or 1
@@ -92,8 +128,6 @@ def _metric_snapshot() -> dict:
     except Exception:
         cpu = 0.0
 
-    mem_total = 1
-    mem_used = 0
     with open("/proc/meminfo", "r", encoding="utf-8") as f:
         lines = f.readlines()
     kv = {x.split(":")[0]: int(x.split()[1]) for x in lines if ":" in x}
@@ -101,13 +135,32 @@ def _metric_snapshot() -> dict:
     mem_available = kv.get("MemAvailable", 0)
     mem_used = max(0, mem_total - mem_available)
 
+    # simple net usage estimate from /proc/net/dev delta over 1 second
     bw = 0.0
+    try:
+        b1 = _sum_bytes()
+        time.sleep(1)
+        b2 = _sum_bytes()
+        bw = max(0.0, (b2 - b1) * 8 / 1_000_000)
+    except Exception:
+        bw = 0.0
+
     return {
         "cpu_percent": round(cpu, 2),
         "memory_mb_used": int(mem_used / 1024),
-        "bandwidth_mbps_used": bw,
+        "bandwidth_mbps_used": round(bw, 2),
         "monthly_traffic_used_gb": 0.0,
     }
+
+
+def _sum_bytes() -> int:
+    total = 0
+    with open("/proc/net/dev", "r", encoding="utf-8") as f:
+        for line in f.readlines()[2:]:
+            parts = line.replace(":", " ").split()
+            if len(parts) >= 10:
+                total += int(parts[1]) + int(parts[9])
+    return total
 
 
 async def report_metrics_loop() -> None:

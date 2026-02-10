@@ -18,9 +18,10 @@ from .models import (
     DnsScheduleConfig,
     Node,
     NodeToken,
+    SystemSetting,
     WhitelistDomain,
 )
-from .security import create_access_token, decode_token, verify_password
+from .security import create_access_token, decode_token, hash_password, verify_password
 from .services.huawei_dns import NodeWeight, compute_weight, update_weighted_records
 
 
@@ -79,6 +80,18 @@ class CertRequestIn(BaseModel):
     verify_mode: str = "http"
 
 
+class NodeCreateIn(BaseModel):
+    node_name: str
+    controller_url: str
+
+
+class SettingsIn(BaseModel):
+    controller_port: int
+    admin_path: str
+    default_admin_user: str
+    default_admin_password: str
+
+
 def auth(authorization: str = Header(default=""), session: Session = Depends(get_session)) -> Admin:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -98,13 +111,45 @@ def startup() -> None:
     init_db()
 
 
+def get_system_setting(session: Session) -> SystemSetting:
+    cfg = session.exec(select(SystemSetting).where(SystemSetting.id == 1)).first()
+    if not cfg:
+        cfg = SystemSetting(id=1)
+        session.add(cfg)
+        session.commit()
+        session.refresh(cfg)
+    return cfg
 
 
+async def push_all_nodes(session: Session) -> dict:
+    nodes: List[Node] = session.exec(select(Node).where(Node.enabled == True)).all()  # noqa: E712
+    whitelist = [d.domain for d in session.exec(select(WhitelistDomain)).all()]
+    cf_ips = [{"ip": x.ip, "port": x.port} for x in session.exec(select(CfIp).where(CfIp.enabled == True)).all()]  # noqa: E712
+    certs = [
+        {"domain": c.domain, "status": c.status, "verify_mode": c.verify_mode}
+        for c in session.exec(select(CertificateRecord)).all()
+    ]
+    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "updated_at": datetime.utcnow().isoformat()}
+
+    results = []
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for n in nodes:
+            try:
+                r = await client.post(
+                    f"{n.endpoint.rstrip('/')}/agent/config",
+                    json=payload,
+                    headers={"X-Agent-Secret": n.shared_secret},
+                )
+                results.append({"node": n.name, "status": r.status_code})
+            except Exception as exc:
+                results.append({"node": n.name, "error": str(exc)})
+    return {"results": results}
 
 
 @app.get(f"/{settings.admin_path}/healthz")
 def panel_healthz():
     return {"ok": True, "service": "controller", "admin_path": settings.admin_path}
+
 
 @app.get(f"/{settings.admin_path}", response_class=HTMLResponse)
 def panel_entry():
@@ -126,12 +171,58 @@ def login(data: LoginIn, session: Session = Depends(get_session)):
     return TokenOut(access_token=create_access_token(admin.username))
 
 
+@app.get(f"{base}/settings")
+def get_settings(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    cfg = get_system_setting(session)
+    return cfg
+
+
+@app.post(f"{base}/settings")
+def set_settings(data: SettingsIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    cfg = get_system_setting(session)
+    cfg.controller_port = data.controller_port
+    cfg.admin_path = data.admin_path.strip("/")
+    cfg.default_admin_user = data.default_admin_user
+    cfg.default_admin_password = data.default_admin_password
+    cfg.updated_at = datetime.utcnow()
+
+    admin = session.exec(select(Admin)).first()
+    if admin:
+        admin.username = data.default_admin_user
+        admin.password_hash = hash_password(data.default_admin_password)
+        session.add(admin)
+
+    session.add(cfg)
+    session.commit()
+    return {"ok": True, "message": "保存成功，端口/路径变更需要重启主控服务后生效"}
+
+
 @app.post(f"{base}/node-tokens")
 def create_node_token(_: Admin = Depends(auth), session: Session = Depends(get_session)):
     token = secrets.token_urlsafe(32)
     session.add(NodeToken(token=token))
     session.commit()
     return {"token": token}
+
+
+@app.post(f"{base}/nodes/onboard")
+def create_node_install_commands(data: NodeCreateIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    cfg = get_system_setting(session)
+    token = secrets.token_urlsafe(32)
+    session.add(NodeToken(token=token))
+    session.commit()
+
+    controller_url = data.controller_url.rstrip("/")
+    admin_path = cfg.admin_path.strip("/")
+    install = (
+        "bash -lc \"curl -fsSL "
+        f"{controller_url}/raw/main/scripts/install_agent.sh -o /tmp/install_agent.sh && "
+        "chmod +x /tmp/install_agent.sh && "
+        f"/tmp/install_agent.sh --controller {controller_url}:{cfg.controller_port} --admin-path {admin_path} "
+        f"--token {token} --node-name {data.node_name}\""
+    )
+    uninstall = "bash -lc \"curl -fsSL https://raw.githubusercontent.com/modu369/gpt/main/scripts/uninstall.sh | bash\""
+    return {"token": token, "install_command": install, "uninstall_command": uninstall}
 
 
 @app.post(f"{base}/nodes/register")
@@ -154,6 +245,23 @@ def register_node(data: NodeRegisterIn, session: Session = Depends(get_session))
     session.add(t)
     session.commit()
     return {"ok": True}
+
+
+@app.post(f"{base}/nodes/{{node_name}}/speedtest")
+async def trigger_node_speedtest(node_name: str, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    node = session.exec(select(Node).where(Node.name == node_name)).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="node not found")
+    async with httpx.AsyncClient(timeout=40.0) as client:
+        r = await client.post(f"{node.endpoint.rstrip('/')}/agent/network/speedtest", headers={"X-Agent-Secret": node.shared_secret})
+    data = r.json()
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=data)
+    node.max_bandwidth_mbps = int(data.get("effective_mbps") or node.max_bandwidth_mbps)
+    node.last_speedtest_at = datetime.utcnow()
+    session.add(node)
+    session.commit()
+    return data
 
 
 @app.post(f"{base}/nodes/{{node_name}}/metrics")
@@ -216,15 +324,15 @@ def list_nodes(_: Admin = Depends(auth), session: Session = Depends(get_session)
 
 
 @app.post(f"{base}/whitelist")
-def add_domain(data: DomainIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+async def add_domain(data: DomainIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     if session.exec(select(WhitelistDomain).where(WhitelistDomain.domain == data.domain)).first():
         return {"ok": True, "exists": True}
     session.add(WhitelistDomain(domain=data.domain))
-    # 自动登记证书记录（待申请）
     cert = session.exec(select(CertificateRecord).where(CertificateRecord.domain == data.domain)).first()
     if not cert:
         session.add(CertificateRecord(domain=data.domain, verify_mode="http", status="pending"))
     session.commit()
+    await push_all_nodes(session)
     return {"ok": True}
 
 
@@ -234,11 +342,12 @@ def list_domains(_: Admin = Depends(auth), session: Session = Depends(get_sessio
 
 
 @app.post(f"{base}/cf-ips")
-def add_cf_ip(data: CfIpIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+async def add_cf_ip(data: CfIpIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     if session.exec(select(CfIp).where(CfIp.ip == data.ip, CfIp.port == data.port)).first():
         return {"ok": True, "exists": True}
     session.add(CfIp(ip=data.ip, port=data.port))
     session.commit()
+    await push_all_nodes(session)
     return {"ok": True}
 
 
@@ -248,7 +357,7 @@ def list_cf_ips(_: Admin = Depends(auth), session: Session = Depends(get_session
 
 
 @app.post(f"{base}/dns/config")
-def set_dns_config(data: DnsConfigIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+async def set_dns_config(data: DnsConfigIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     cfg = session.exec(select(DnsScheduleConfig)).first()
     if not cfg:
         cfg = DnsScheduleConfig()
@@ -260,6 +369,7 @@ def set_dns_config(data: DnsConfigIn, _: Admin = Depends(auth), session: Session
     cfg.updated_at = datetime.utcnow()
     session.add(cfg)
     session.commit()
+    await push_all_nodes(session)
     return {"ok": True}
 
 
@@ -362,30 +472,10 @@ async def dispatch_certificate_apply(domain: str, verify_mode: str, session: Ses
         rec.updated_at = datetime.utcnow()
         session.add(rec)
         session.commit()
+    await push_all_nodes(session)
     return {"results": results}
 
 
 @app.post(f"{base}/sync")
 async def sync(_: Admin = Depends(auth), session: Session = Depends(get_session)):
-    nodes: List[Node] = session.exec(select(Node).where(Node.enabled == True)).all()  # noqa: E712
-    whitelist = [d.domain for d in session.exec(select(WhitelistDomain)).all()]
-    cf_ips = [{"ip": x.ip, "port": x.port} for x in session.exec(select(CfIp).where(CfIp.enabled == True)).all()]  # noqa: E712
-    certs = [
-        {"domain": c.domain, "status": c.status, "verify_mode": c.verify_mode}
-        for c in session.exec(select(CertificateRecord)).all()
-    ]
-    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "updated_at": datetime.utcnow().isoformat()}
-
-    results = []
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        for n in nodes:
-            try:
-                r = await client.post(
-                    f"{n.endpoint.rstrip('/')}/agent/config",
-                    json=payload,
-                    headers={"X-Agent-Secret": n.shared_secret},
-                )
-                results.append({"node": n.name, "status": r.status_code})
-            except Exception as exc:
-                results.append({"node": n.name, "error": str(exc)})
-    return {"results": results}
+    return await push_all_nodes(session)

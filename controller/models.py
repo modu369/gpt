@@ -9,6 +9,15 @@ class Admin(SQLModel, table=True):
     password_hash: str
 
 
+class SystemSetting(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    controller_port: int = 8080
+    admin_path: str = "yun123"
+    default_admin_user: str = "admin"
+    default_admin_password: str = "admin123"
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Node(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
@@ -30,6 +39,7 @@ class Node(SQLModel, table=True):
     monthly_traffic_used_gb: float = 0
     traffic_limit_enabled: bool = False
     traffic_count_mode: str = "both"  # both|ingress|egress
+    last_speedtest_at: datetime = Field(default_factory=datetime.utcnow)
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

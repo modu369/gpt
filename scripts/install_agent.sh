@@ -10,7 +10,7 @@ REPO_BRANCH="codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi5
 CONTROLLER=""
 TOKEN=""
 NODE_NAME=""
-ADMIN_PATH="panel"
+ADMIN_PATH="yun123"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,16 +23,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$CONTROLLER" || -z "$TOKEN" || -z "$NODE_NAME" ]]; then
-  echo "Usage: install_agent.sh --controller <url> --token <token> --node-name <name> [--admin-path panel]"
+  echo "Usage: install_agent.sh --controller <url> --token <token> --node-name <name> [--admin-path yun123]"
   exit 1
 fi
 
 SHARED_SECRET=$(openssl rand -hex 16)
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git haproxy curl iproute2 openssl
+apt-get install -y python3 python3-venv python3-pip git haproxy curl iproute2 openssl speedtest-cli
 
-# enable BBR
 cat >/etc/sysctl.d/99-bbr.conf <<SYS
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -42,10 +41,13 @@ sysctl --system >/dev/null 2>&1 || true
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" "$REPO_DIR"
 else
-  git -C "$REPO_DIR" pull --ff-only
+  git -C "$REPO_DIR" fetch origin "$REPO_BRANCH"
+  git -C "$REPO_DIR" checkout "$REPO_BRANCH"
+  git -C "$REPO_DIR" reset --hard "origin/$REPO_BRANCH"
 fi
 
 python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
 
 cat >/etc/systemd/system/cfrelay-agent.service <<SERVICE
@@ -76,9 +78,20 @@ IP=$(curl -fsSL https://api.ipify.org || hostname -I | awk '{print $1}')
 CPU=$(nproc)
 MEM=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
 
+DOWN=100
+UP=100
+if command -v speedtest-cli >/dev/null 2>&1; then
+  OUT=$(speedtest-cli --simple 2>/dev/null || true)
+  D=$(echo "$OUT" | awk '/Download/ {print int($2)}')
+  U=$(echo "$OUT" | awk '/Upload/ {print int($2)}')
+  [[ -n "$D" ]] && DOWN="$D"
+  [[ -n "$U" ]] && UP="$U"
+fi
+MAX_BW=$(( DOWN < UP ? DOWN : UP ))
+
 curl -fsSL -X POST "$CONTROLLER/$ADMIN_PATH/api/nodes/register" \
   -H 'Content-Type: application/json' \
-  -d "{\"token\":\"$TOKEN\",\"name\":\"$NODE_NAME\",\"endpoint\":\"http://$IP:18080\",\"shared_secret\":\"$SHARED_SECRET\",\"cpu_cores\":$CPU,\"memory_mb\":$MEM,\"max_bandwidth_mbps\":100}" \
+  -d "{\"token\":\"$TOKEN\",\"name\":\"$NODE_NAME\",\"endpoint\":\"http://$IP:18080\",\"shared_secret\":\"$SHARED_SECRET\",\"cpu_cores\":$CPU,\"memory_mb\":$MEM,\"max_bandwidth_mbps\":$MAX_BW}" \
   || true
 
-echo "Agent installed and registration attempted."
+echo "Agent installed/updated and now active."
