@@ -11,5 +11,12 @@ class Settings(BaseModel):
     admin_user: str = os.getenv("ADMIN_USER", "admin")
     admin_password: str = os.getenv("ADMIN_PASSWORD", "admin123")
 
+    # Huawei Cloud DNS (intl) optional
+    hw_access_key: str = os.getenv("HUAWEI_AK", "")
+    hw_secret_key: str = os.getenv("HUAWEI_SK", "")
+    hw_region: str = os.getenv("HUAWEI_REGION", "ap-southeast-1")
+    hw_zone_id: str = os.getenv("HUAWEI_DNS_ZONE_ID", "")
+    hw_recordset_name: str = os.getenv("HUAWEI_DNS_RECORDSET", "")
+
 
 settings = Settings()

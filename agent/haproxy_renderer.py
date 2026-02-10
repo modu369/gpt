@@ -6,12 +6,15 @@ def render(cfg: Dict) -> str:
     cf_ips: List[Dict] = cfg.get("cf_ips", [])
 
     acl_lines = [f"  acl allowed_host hdr(host) -i {d}" for d in whitelist]
-    deny_line = "  http-request deny unless allowed_host" if whitelist else ""
+    deny_line = "  http-request deny unless allowed_host or acme_path" if whitelist else ""
 
     backend_servers = [
         f"  server cf{i} {x['ip']}:{x['port']} check inter 3000 rise 2 fall 2"
         for i, x in enumerate(cf_ips, start=1)
     ]
+
+    if not backend_servers:
+        backend_servers = ["  server blackhole 127.0.0.1:9"]
 
     return f"""
 global
@@ -30,6 +33,7 @@ defaults
 
 frontend fe_http
   bind *:80
+  acl acme_path path_beg /.well-known/acme-challenge/
 {chr(10).join(acl_lines)}
 {deny_line}
   default_backend be_cf

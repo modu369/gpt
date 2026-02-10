@@ -8,6 +8,8 @@ class Settings(BaseModel):
     shared_secret: str = os.getenv("AGENT_SHARED_SECRET", "change-me")
     state_dir: str = os.getenv("AGENT_STATE_DIR", "/opt/cfrelay")
     haproxy_cfg: str = os.getenv("HAPROXY_CFG", "/etc/haproxy/haproxy.cfg")
+    controller_api_base: str = os.getenv("CONTROLLER_API_BASE", "")
+    node_name: str = os.getenv("NODE_NAME", "")
 
 
 settings = Settings()

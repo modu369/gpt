@@ -1,102 +1,68 @@
-# Cloudflare Relay Orchestrator（主控+被控）
+# Cloudflare Relay Orchestrator（主控 + 被控）
 
-> 一个可一键部署的 **Cloudflare IP 转发（反代）控制平面 + 节点执行平面** 基线实现。
+## 本次补全内容
 
-## 现阶段能力（本仓库实现）
+- 华为云国际站 DNS 权重自动调度闭环
+  - 被控端每 5 秒上报 CPU/内存/带宽指标到主控
+  - 主控按资源压力计算权重
+  - 主控可一键触发 `dns/reconcile` 自动更新华为云 DNS 记录
+- 证书中心闭环
+  - 主控证书记录可视化（状态、失败原因、重试次数）
+  - 主控支持手动发起申请、失败重试
+  - 被控端通过 `acme.sh` 自动申请并安装证书（HTTP 验证）
+  - 申请成功自动 `reload haproxy`
 
-- 主控端（Controller）
-  - FastAPI + SQLite 可视化 API（可接前端）
-  - 账号密码鉴权（JWT）
-  - 自定义后台入口路径（`/your-tag`）
-  - 节点注册令牌签发与节点管理
-  - 域名白名单管理
-  - Cloudflare 优选 IP 池管理
-  - 将配置实时下发到节点（HTTP Push）
-- 被控端（Agent）
-  - 接收主控配置并本地原子落盘
-  - 周期性健康检查 Cloudflare IP（TCP 检测）
-  - 自动生成并热重载 HAProxy 配置
-  - 支持 80/443 入站，按白名单放行
-  - 对非白名单域名直接拒绝
-  - 向上游传递 `X-Forwarded-For / X-Real-IP`
-- 一键脚本
-  - Debian 12 主控端安装 / 更新 / 卸载
-  - Debian 12 被控端安装 / 更新 / 卸载
-  - 被控端安装自动开启 BBR
+## 架构
 
-## 重要说明（真实 IP）
+用户 -> Relay 节点（HAProxy）-> Cloudflare IP -> 源站
 
-Cloudflare 非企业版不支持标准 Proxy Protocol 透传客户端源地址。该实现采用 **HTTP 层头部透传**：
+- 主控：FastAPI + SQLite
+- 被控：FastAPI + HAProxy + acme.sh
 
-- Relay → Cloudflare 添加 `X-Forwarded-For` / `X-Real-IP`
-- 你的源站需按业务信任链读取对应头部
+## 关键限制说明
 
-> 对“端到端 TCP 级别真实源地址透传至 Cloudflare 边缘”场景，在非企业版条件下无法完全达成。
+- Cloudflare 非企业版无法做 TCP 层 Proxy Protocol 真实源地址透传。
+- 本项目采用 HTTP 头透传：`X-Forwarded-For` + `X-Real-IP`。
 
-## 目录
+## 快速安装
 
-- `controller/` 主控 API
-- `agent/` 节点执行器 + HAProxy 生成器
-- `scripts/` 一键安装/更新/卸载脚本
-
-## 快速开始
-
-### 1) 主控安装（Debian 12）
+### 主控（Debian 12）
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/<your-org>/<your-repo>/main/scripts/install_controller.sh)
 ```
 
-安装后默认：
-
-- API: `http://<controller-ip>:8080/<ADMIN_PATH>/api`
-- 初始账号密码由环境变量传入（脚本会要求填写）
-
-### 2) 签发节点安装令牌
-
-登录后调用：
-
-```bash
-POST /<ADMIN_PATH>/api/node-tokens
-```
-
-### 3) 被控安装（Debian 12）
+### 被控（Debian 12）
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/<your-org>/<your-repo>/main/scripts/install_agent.sh) \
   --controller http://<controller-ip>:8080 \
+  --admin-path panel \
   --token <node-install-token> \
   --node-name relay-bj-01
 ```
 
-## API 概览（节选）
+## 主要 API
 
-- `POST /{admin_path}/api/auth/login`
-- `POST /{admin_path}/api/node-tokens`
-- `GET /{admin_path}/api/nodes`
-- `POST /{admin_path}/api/whitelist`
-- `POST /{admin_path}/api/cf-ips`
-- `POST /{admin_path}/api/sync`
+- 登录：`POST /{admin_path}/api/auth/login`
+- 节点令牌：`POST /{admin_path}/api/node-tokens`
+- 节点列表：`GET /{admin_path}/api/nodes`
+- 同步：`POST /{admin_path}/api/sync`
+- 资源总览：`GET /{admin_path}/api/dashboard/overview`
+- DNS 配置：`POST /{admin_path}/api/dns/config`
+- DNS 调度执行：`POST /{admin_path}/api/dns/reconcile`
+- 证书列表：`GET /{admin_path}/api/certificates`
+- 手动申请证书：`POST /{admin_path}/api/certificates/manual`
+- 证书重试：`POST /{admin_path}/api/certificates/{domain}/retry`
 
-## 华为云 DNS 权重调度
+## 华为云 DNS 配置
 
-本仓库提供扩展点（`controller/services/huawei_dns.py`）用于接入华为云国际站 DNS API，
-你可在同步任务里按节点 CPU/内存/带宽利用率动态调整权重，自动增删解析记录。
+可用环境变量（主控服务）：
 
-> 因每个租户 IAM/区域/权限模型不同，默认以可运行骨架 + 签名占位实现，落地时补齐 AK/SK 与 zone 配置即可。
+- `HUAWEI_AK`
+- `HUAWEI_SK`
+- `HUAWEI_REGION`（默认 `ap-southeast-1`）
+- `HUAWEI_DNS_ZONE_ID`
+- `HUAWEI_DNS_RECORDSET`
 
-## 证书策略
-
-- 通过 `acme.sh` 预置 HTTP 验证目录
-- 证书自动申请/续期任务入口已预留（`agent/cert_manager.py`）
-- 未签发证书前，保持 challenge 路径可访问
-
-## 性能建议
-
-- HAProxy 使用 keep-alive、连接复用、健康检查
-- 推荐内核参数 + BBR
-- 生产建议上 OpenResty/HAProxy 多进程绑定 CPU，配合 eBPF 观测
-
-## 免责声明
-
-该项目为可扩展基础实现，建议在生产前进行压测、审计、故障演练与灰度发布。
+未配置 SDK 或 AK/SK 时将进入 dry-run，便于先联调流程。
