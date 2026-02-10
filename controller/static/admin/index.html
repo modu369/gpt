@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CF Relay 管理后台</title>
+  <style>
+    :root { --bg:#0b1020; --card:#121a31; --text:#dbe7ff; --muted:#8fa6d8; --ok:#36d399; --warn:#fbbf24; --bad:#f87171; }
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,Segoe UI,Arial;background:linear-gradient(120deg,#0b1020,#151d36);color:var(--text)}
+    .wrap{max-width:1200px;margin:0 auto;padding:20px}
+    .title{font-size:24px;font-weight:700;margin:10px 0 18px}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+    .card{background:var(--card);border:1px solid #1f2b52;border-radius:12px;padding:14px}
+    .col-4{grid-column:span 4}.col-6{grid-column:span 6}.col-8{grid-column:span 8}.col-12{grid-column:span 12}
+    input,button,select{border-radius:8px;border:1px solid #334170;background:#0b1330;color:#e5eeff;padding:8px}
+    button{cursor:pointer;background:#2447d6;border-color:#3257e5}
+    button.secondary{background:#1c2a52}
+    h3{margin:2px 0 10px;font-size:16px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .kpi{font-size:28px;font-weight:700}.muted{color:var(--muted);font-size:12px}
+    table{width:100%;border-collapse:collapse;font-size:13px} th,td{border-bottom:1px solid #21305e;padding:8px;text-align:left}
+    .pill{padding:2px 8px;border-radius:999px;font-size:12px}
+    .ok{background:#123f30;color:#8ff0c6}.warn{background:#4a3b12;color:#ffd97a}.bad{background:#4a1b1b;color:#ff9c9c}
+    #app{display:none} #loginBox{max-width:430px;margin:12vh auto;background:var(--card);padding:20px;border-radius:12px;border:1px solid #273768}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div id="loginBox">
+    <div class="title">CF Relay 管理后台登录</div>
+    <div class="muted">请使用管理员账号登录后管理节点、白名单、CF IP、DNS 调度与证书。</div>
+    <div class="row" style="margin-top:12px"><input id="username" placeholder="用户名" value="admin" style="flex:1"></div>
+    <div class="row" style="margin-top:8px"><input id="password" type="password" placeholder="密码" style="flex:1"></div>
+    <div class="row" style="margin-top:12px"><button onclick="login()">登录</button><span id="loginMsg" class="muted"></span></div>
+  </div>
+
+  <div id="app">
+    <div class="row" style="justify-content:space-between">
+      <div class="title">CF Relay 可视化管理后台</div>
+      <div class="row"><button class="secondary" onclick="refreshAll()">刷新</button><button onclick="syncAll()">同步到节点</button></div>
+    </div>
+
+    <div class="grid">
+      <div class="card col-4"><h3>节点总数</h3><div class="kpi" id="k_nodes">0</div></div>
+      <div class="card col-4"><h3>CPU 使用核(估算)</h3><div class="kpi" id="k_cpu">0</div></div>
+      <div class="card col-4"><h3>内存使用 MB</h3><div class="kpi" id="k_mem">0</div></div>
+
+      <div class="card col-12">
+        <h3>节点列表</h3>
+        <table><thead><tr><th>名称</th><th>地址</th><th>在线</th><th>CPU%</th><th>内存MB</th><th>带宽Mbps</th></tr></thead><tbody id="nodesT"></tbody></table>
+      </div>
+
+      <div class="card col-6">
+        <h3>域名白名单</h3>
+        <div class="row"><input id="domainIn" placeholder="example.com" style="flex:1"><button onclick="addDomain()">添加</button></div>
+        <div id="domains" class="muted" style="margin-top:8px"></div>
+      </div>
+      <div class="card col-6">
+        <h3>Cloudflare IP 池</h3>
+        <div class="row"><input id="cfIpIn" placeholder="1.1.1.1" style="flex:1"><input id="cfPortIn" value="443" style="width:90px"><button onclick="addCfIp()">添加</button></div>
+        <div id="cfips" class="muted" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card col-6">
+        <h3>华为云 DNS 调度</h3>
+        <div class="row"><input id="dnsCname" placeholder="relay.example.com." style="flex:1"><input id="dnsZone" placeholder="zone_id" style="flex:1"></div>
+        <div class="row" style="margin-top:8px"><input id="dnsTtl" value="30" style="width:100px"><button onclick="saveDnsCfg()">保存配置</button><button class="secondary" onclick="reconcileDns()">执行调度</button></div>
+        <pre id="dnsOut" class="muted"></pre>
+      </div>
+
+      <div class="card col-6">
+        <h3>证书中心</h3>
+        <div class="row"><input id="certDomain" placeholder="example.com" style="flex:1"><select id="certMode"><option value="http">http</option><option value="dns">dns</option></select><button onclick="applyCert()">申请/重试</button></div>
+        <table style="margin-top:8px"><thead><tr><th>域名</th><th>状态</th><th>重试</th></tr></thead><tbody id="certT"></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let token = localStorage.getItem('cf_token') || '';
+const base = `${location.pathname.replace(/\/$/, '')}/api`;
+function hdr(){return {'Content-Type':'application/json','Authorization':`Bearer ${token}`};}
+async function api(path,opt={}){const r=await fetch(base+path,opt); if(!r.ok) throw new Error(await r.text()); return r.json();}
+async function login(){
+  const username=document.getElementById('username').value; const password=document.getElementById('password').value;
+  try{const r=await fetch(base+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
+      if(!r.ok) throw new Error(await r.text()); const j=await r.json(); token=j.access_token; localStorage.setItem('cf_token',token);
+      document.getElementById('loginBox').style.display='none'; document.getElementById('app').style.display='block'; refreshAll();
+  }catch(e){document.getElementById('loginMsg').textContent='登录失败: '+e.message;}
+}
+async function refreshAll(){
+  try{
+    const o=await api('/dashboard/overview',{headers:hdr()});
+    document.getElementById('k_nodes').textContent=o.total_nodes||0;
+    document.getElementById('k_cpu').textContent=o.totals?.cpu_used_cores_est||0;
+    document.getElementById('k_mem').textContent=o.totals?.memory_used_mb||0;
+    const nodes=await api('/nodes',{headers:hdr()});
+    document.getElementById('nodesT').innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill ${n.online?'ok':'warn'}">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</td></tr>`).join('');
+    const domains=await api('/whitelist',{headers:hdr()}); document.getElementById('domains').textContent=domains.map(x=>x.domain).join(', ')||'(空)';
+    const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').textContent=cf.map(x=>`${x.ip}:${x.port}`).join(', ')||'(空)';
+    const certs=await api('/certificates',{headers:hdr()}); document.getElementById('certT').innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}</td><td><button onclick="retryCert('${c.domain}')">重试</button></td></tr>`).join('');
+  }catch(e){alert('拉取数据失败，请重新登录: '+e.message); localStorage.removeItem('cf_token'); location.reload();}
+}
+async function addDomain(){await api('/whitelist',{method:'POST',headers:hdr(),body:JSON.stringify({domain:domainIn.value})}); refreshAll();}
+async function addCfIp(){await api('/cf-ips',{method:'POST',headers:hdr(),body:JSON.stringify({ip:cfIpIn.value,port:Number(cfPortIn.value||443)})}); refreshAll();}
+async function saveDnsCfg(){await api('/dns/config',{method:'POST',headers:hdr(),body:JSON.stringify({cname:dnsCname.value,zone_id:dnsZone.value,ttl:Number(dnsTtl.value||30),low_traffic_threshold_percent:10})});}
+async function reconcileDns(){const r=await api('/dns/reconcile',{method:'POST',headers:hdr()}); dnsOut.textContent=JSON.stringify(r,null,2);}
+async function applyCert(){await api('/certificates/manual',{method:'POST',headers:hdr(),body:JSON.stringify({domain:certDomain.value,verify_mode:certMode.value})}); refreshAll();}
+async function retryCert(domain){await api(`/certificates/${domain}/retry`,{method:'POST',headers:hdr()}); refreshAll();}
+async function syncAll(){await api('/sync',{method:'POST',headers:hdr()}); alert('已下发');}
+if(token){document.getElementById('loginBox').style.display='none';document.getElementById('app').style.display='block';refreshAll();}
+</script>
+</body>
+</html>
