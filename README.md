@@ -22,6 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/uninstall.sh | bash
 ```
 
+
+> 安装脚本已处理分支不存在的回退逻辑：
+> - 默认直接克隆仓库默认分支；
+> - 如需指定分支可传 `REPO_BRANCH=xxx`；若分支不存在会自动回退默认分支。
+> - 子目录默认 `PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system`，也可手动覆盖。
+
 ## 2) 主控/被控分离 + 可视化后台
 
 - 后台隐藏入口：`http://<ip>:<port>/<marker>/login`
