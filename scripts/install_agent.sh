@@ -5,7 +5,7 @@ REPO_DIR="/opt/cfrelay"
 APP_DIR="$REPO_DIR/agent"
 VENV_DIR="$REPO_DIR/.venv"
 REPO_URL="https://github.com/modu369/gpt.git"
-REPO_BRANCH="codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi51d"
+REPO_BRANCH="codex/implement-management-backend-updates"
 
 CONTROLLER=""
 TOKEN=""

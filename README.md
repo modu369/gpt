@@ -29,13 +29,13 @@
 ### 主控（Debian 12）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi51d/scripts/install_controller.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_controller.sh)
 ```
 
 ### 被控（Debian 12）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi51d/scripts/install_agent.sh) \
+bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh) \
   --controller http://<controller-ip>:8080 \
   --admin-path panel \
   --token <node-install-token> \

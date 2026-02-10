@@ -216,12 +216,12 @@ def create_node_install_commands(data: NodeCreateIn, _: Admin = Depends(auth), s
     admin_path = cfg.admin_path.strip("/")
     install = (
         "bash -lc \"curl -fsSL "
-        f"{controller_url}/raw/main/scripts/install_agent.sh -o /tmp/install_agent.sh && "
+        "https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh -o /tmp/install_agent.sh && "
         "chmod +x /tmp/install_agent.sh && "
         f"/tmp/install_agent.sh --controller {controller_url}:{cfg.controller_port} --admin-path {admin_path} "
         f"--token {token} --node-name {data.node_name}\""
     )
-    uninstall = "bash -lc \"curl -fsSL https://raw.githubusercontent.com/modu369/gpt/main/scripts/uninstall.sh | bash\""
+    uninstall = "bash -lc \"curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash\""
     return {"token": token, "install_command": install, "uninstall_command": uninstall}
 
 
