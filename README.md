@@ -6,7 +6,7 @@
 
 ### 主控安装
 ```bash
-REPO_BRANCH=codex PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-master.sh | bash
+PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-master.sh | bash
 ```
 
 ### 被控安装（需主控 enrollment key）
@@ -14,7 +14,7 @@ REPO_BRANCH=codex PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwardi
 MASTER_URL='http://<master-ip>:8080/<marker>' \
 ENROLL_KEY='change-me' \
 NODE_ID='relay-bj-01' \
-REPO_BRANCH=codex PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system \
+PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system \
 curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-agent.sh | bash
 ```
 
@@ -24,10 +24,10 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 ```
 
 
-> 安装脚本已固定默认分支为 `codex`，并建议在命令中显式传入：
-> - `REPO_BRANCH=codex`
-> - `PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system`
-> 这样可以避免分支或目录识别偏差导致安装失败。
+> 安装脚本已内置多层容错：
+> - 优先尝试 `REPO_BRANCH`；若不存在会自动回退默认分支，不会直接失败；
+> - 自动识别项目目录（`$PROJECT_SUBDIR` / `codex/$PROJECT_SUBDIR` / 仓库根目录 / 自动扫描）；
+> - 仅建议保留 `PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system` 以加快定位。
 
 ## 2) 主控/被控分离 + 可视化后台
 
