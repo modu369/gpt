@@ -47,6 +47,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
 - 控制台入口：`http://<controller-ip>:8080/<admin_path>`
 - API 基础：`http://<controller-ip>:8080/<admin_path>/api`
 - API 文档：`http://<controller-ip>:8080/<admin_path>/api/docs`
+- 健康检查：`http://<controller-ip>:8080/<admin_path>/healthz`
 
 ## 主要 API
 
@@ -72,3 +73,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
 - `HUAWEI_DNS_RECORDSET`
 
 未配置 SDK 或 AK/SK 时将进入 dry-run，便于先联调流程。
+
+
+## 常见排障
+
+- 若浏览器提示“拒绝连接”，先在主控服务器执行：
+  - `systemctl status cfrelay-controller`
+  - `journalctl -u cfrelay-controller -n 100 --no-pager`
+- 确认云厂商安全组/防火墙已放行 `TCP/8080`。

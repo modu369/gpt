@@ -99,6 +99,12 @@ def startup() -> None:
 
 
 
+
+
+@app.get(f"/{settings.admin_path}/healthz")
+def panel_healthz():
+    return {"ok": True, "service": "controller", "admin_path": settings.admin_path}
+
 @app.get(f"/{settings.admin_path}", response_class=HTMLResponse)
 def panel_entry():
     return f"""

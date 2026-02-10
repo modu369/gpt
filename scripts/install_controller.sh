@@ -16,15 +16,18 @@ read -rp "Admin path [panel]: " ADMIN_PATH
 ADMIN_PATH=${ADMIN_PATH:-panel}
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git
+apt-get install -y python3 python3-venv python3-pip git curl
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" "$REPO_DIR"
 else
-  git -C "$REPO_DIR" pull --ff-only
+  git -C "$REPO_DIR" fetch origin "$REPO_BRANCH"
+  git -C "$REPO_DIR" checkout "$REPO_BRANCH"
+  git -C "$REPO_DIR" reset --hard "origin/$REPO_BRANCH"
 fi
 
 python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
 
 cat >/etc/systemd/system/cfrelay-controller.service <<SERVICE
@@ -47,11 +50,44 @@ RestartSec=2
 WantedBy=multi-user.target
 SERVICE
 
+# Optional firewall opening for Debian hosts using ufw/firewalld
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 8080/tcp >/dev/null 2>&1 || true
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+  firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+
 systemctl daemon-reload
 systemctl enable --now cfrelay-controller
 
+# readiness check, fail fast if service is broken
+for _ in $(seq 1 20); do
+  if curl -fsS "http://127.0.0.1:8080/$ADMIN_PATH/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if ! systemctl is-active --quiet cfrelay-controller; then
+  echo "ERROR: cfrelay-controller service is not active"
+  systemctl status cfrelay-controller --no-pager || true
+  journalctl -u cfrelay-controller -n 80 --no-pager || true
+  exit 1
+fi
+
+if ! curl -fsS "http://127.0.0.1:8080/$ADMIN_PATH/healthz" >/dev/null 2>&1; then
+  echo "ERROR: Controller health check failed at /$ADMIN_PATH/healthz"
+  systemctl status cfrelay-controller --no-pager || true
+  journalctl -u cfrelay-controller -n 80 --no-pager || true
+  echo "Hint: please check cloud security group allows TCP/8080 inbound"
+  exit 1
+fi
+
 IP=$(hostname -I | awk '{print $1}')
 echo "Controller installed:"
-echo "Panel: http://$IP:8080/$ADMIN_PATH"
-echo "API:   http://$IP:8080/$ADMIN_PATH/api"
-echo "Docs:  http://$IP:8080/$ADMIN_PATH/api/docs"
+echo "Panel:  http://$IP:8080/$ADMIN_PATH"
+echo "API:    http://$IP:8080/$ADMIN_PATH/api"
+echo "Docs:   http://$IP:8080/$ADMIN_PATH/api/docs"
+echo "Health: http://$IP:8080/$ADMIN_PATH/healthz"
