@@ -81,7 +81,7 @@ if ! curl -fsS "http://127.0.0.1:8080/$ADMIN_PATH/healthz" >/dev/null 2>&1; then
   echo "ERROR: Controller health check failed at /$ADMIN_PATH/healthz"
   systemctl status cfrelay-controller --no-pager || true
   journalctl -u cfrelay-controller -n 80 --no-pager || true
-  echo "Hint: please check cloud security group allows TCP/8080 inbound"
+  echo "Hint: check logs above first; also verify TCP/8080 is allowed in host firewall and cloud security group"
   exit 1
 fi
 

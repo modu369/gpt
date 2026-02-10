@@ -81,3 +81,4 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
   - `systemctl status cfrelay-controller`
   - `journalctl -u cfrelay-controller -n 100 --no-pager`
 - 确认云厂商安全组/防火墙已放行 `TCP/8080`。
+- 若日志出现 `bcrypt` / `password cannot be longer than 72 bytes`，请更新到最新安装脚本后重装主控（已改为 `pbkdf2_sha256`，不再依赖 bcrypt 后端）。
