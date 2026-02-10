@@ -9,11 +9,10 @@ if [[ -z "${MASTER_URL:-}" || -z "${ENROLL_KEY:-}" || -z "${NODE_ID:-}" ]]; then
 fi
 
 apt-get update
-apt-get install -y git curl golang ca-certificates ethtool
+apt-get install -y git curl golang ca-certificates ethtool certbot
 rm -rf "$INSTALL_DIR"
 git clone "$REPO_URL" "$INSTALL_DIR"
 cd "$INSTALL_DIR"
-go mod tidy
 go build -o /usr/local/bin/cfrelay-agent ./cmd/agent
 install -m 644 systemd/cfrelay-agent.service /etc/systemd/system/cfrelay-agent.service
 

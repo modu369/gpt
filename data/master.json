@@ -1,0 +1,15 @@
+{
+  "nodes": {},
+  "certs": {},
+  "huawei_dns": {
+    "enabled": false,
+    "endpoint": "",
+    "zone_id": "",
+    "recordset_id": "",
+    "access_key": "",
+    "secret_key": "",
+    "scheduler_cname": ""
+  },
+  "overloads": null,
+  "last_synced": "0001-01-01T00:00:00Z"
+}

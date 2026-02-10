@@ -1,11 +1,31 @@
-# 华为云国际站 DNS 权重自动调度（示例）
+# 华为云国际站 DNS 权重自动调度
 
-主控可根据节点负载生成权重，并调用华为云 DNS API 更新某 CNAME 记录集合。
+## 已实现能力
 
-流程：
-1. 主控读取各节点 CPU/内存/带宽占用。
-2. 计算健康分：`score = 100 - max(cpu%, mem%, bw%)`。
-3. score <= 0 的节点从解析池移除。
-4. 将 score 归一化为权重，调用 API 更新。
+主控 `POST /<marker>/api/admin/dns/huawei` 可执行一次调度计算：
 
-> 说明：该仓库当前提供接口预留，实际对接时请填入 IAM AK/SK、ZoneID、RecordSetID。
+1. 汇总每个节点实时负载（CPU/内存/带宽占比）。
+2. 计算 `score = 100 - max(cpu, mem, bwPercent)`。
+3. `score <= 0` 或 `node.paused=true` 的节点不参与解析池。
+4. 输出各节点权重映射，供华为云 DNS Recordset 更新。
+
+## 配置接口
+
+- `GET /api/admin/dns/huawei`：查看配置。
+- `PUT /api/admin/dns/huawei`：保存配置。
+- `POST /api/admin/dns/huawei`：执行一次同步并返回权重结果。
+
+配置字段：
+- `enabled`
+- `endpoint`
+- `zone_id`
+- `recordset_id`
+- `access_key`
+- `secret_key`
+- `scheduler_cname`
+
+## 下一步（可继续）
+
+- 补充华为云 API HMAC 签名请求。
+- 将权重计算结果写入 A/AAAA/CNAME Recordset 的 `weight`。
+- 增加失败重试与回滚。

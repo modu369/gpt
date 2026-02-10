@@ -7,6 +7,8 @@ Type=simple
 Environment=AGENT_MASTER=__MASTER_URL__
 Environment=AGENT_ENROLL_KEY=__ENROLL_KEY__
 Environment=AGENT_NODE_ID=__NODE_ID__
+Environment=AGENT_MAX_BW_FALLBACK=1000
+Environment=AGENT_CERTBOT=0
 WorkingDirectory=/opt/cfrelay
 ExecStart=/usr/local/bin/cfrelay-agent
 Restart=always
