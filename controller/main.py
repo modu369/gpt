@@ -4,7 +4,7 @@ import secrets
 from typing import List
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -82,7 +82,6 @@ class CertRequestIn(BaseModel):
 
 class NodeCreateIn(BaseModel):
     node_name: str
-    controller_url: str
 
 
 class SettingsIn(BaseModel):
@@ -206,23 +205,36 @@ def create_node_token(_: Admin = Depends(auth), session: Session = Depends(get_s
 
 
 @app.post(f"{base}/nodes/onboard")
-def create_node_install_commands(data: NodeCreateIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+def create_node_install_commands(
+    data: NodeCreateIn,
+    request: Request,
+    _: Admin = Depends(auth),
+    session: Session = Depends(get_session),
+):
     cfg = get_system_setting(session)
     token = secrets.token_urlsafe(32)
     session.add(NodeToken(token=token))
     session.commit()
 
-    controller_url = data.controller_url.rstrip("/")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "127.0.0.1:8080"
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    controller_url = f"{scheme}://{host}".rstrip("/")
+
     admin_path = cfg.admin_path.strip("/")
     install = (
         "bash -lc \"curl -fsSL "
         "https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh -o /tmp/install_agent.sh && "
         "chmod +x /tmp/install_agent.sh && "
-        f"/tmp/install_agent.sh --controller {controller_url}:{cfg.controller_port} --admin-path {admin_path} "
+        f"/tmp/install_agent.sh --controller {controller_url} --admin-path {admin_path} "
         f"--token {token} --node-name {data.node_name}\""
     )
     uninstall = "bash -lc \"curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash\""
-    return {"token": token, "install_command": install, "uninstall_command": uninstall}
+    return {
+        "token": token,
+        "controller_url": controller_url,
+        "install_command": install,
+        "uninstall_command": uninstall,
+    }
 
 
 @app.post(f"{base}/nodes/register")
