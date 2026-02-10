@@ -52,7 +52,7 @@ func main() {
 	marker := strings.Trim(env("MASTER_MARKER", "tianyun123"), "/")
 	enrollKey := env("MASTER_ENROLL_KEY", "change-me")
 	adminUser := env("MASTER_ADMIN_USER", "admin")
-	adminPass := env("MASTER_ADMIN_PASS", "change-me")
+	adminPass := env("MASTER_ADMIN_PASS", "admin123")
 	adminToken := env("MASTER_ADMIN_TOKEN", "admin-change-me")
 	dataPath := env("MASTER_DATA", filepath.Join("data", "master.json"))
 	_ = os.MkdirAll(filepath.Dir(dataPath), 0o755)
@@ -636,7 +636,17 @@ func logReq(next http.Handler) http.Handler {
 	})
 }
 
-const loginPage = `<!doctype html><html><body><h3>CFRelay Login</h3><form method="post"><input name="username" placeholder="user"/><input name="password" type="password" placeholder="password"/><button>Login</button></form></body></html>`
+const loginPage = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>CFRelay 登录</title><style>
+body{margin:0;font-family:Inter,Segoe UI,Arial;background:linear-gradient(135deg,#0f172a,#1e293b);height:100vh;display:flex;align-items:center;justify-content:center;color:#0f172a}
+.card{width:360px;background:#ffffff;border-radius:16px;box-shadow:0 20px 60px rgba(2,6,23,.45);padding:26px}
+.logo{font-weight:700;font-size:20px;margin:0 0 4px}
+.sub{color:#64748b;font-size:13px;margin-bottom:18px}
+label{display:block;font-size:12px;color:#334155;margin:10px 0 6px}
+input{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;outline:none}
+input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+button{margin-top:14px;width:100%;border:0;background:#2563eb;color:#fff;border-radius:10px;padding:10px 12px;font-weight:600;cursor:pointer}
+.tip{margin-top:10px;font-size:12px;color:#64748b}
+</style></head><body><form class="card" method="post"><p class="logo">CFRelay 控制台</p><div class="sub">请输入主控账号密码登录</div><label>账号</label><input name="username" placeholder="admin" required/><label>密码</label><input name="password" type="password" placeholder="••••••••" required/><button>登录</button><div class="tip">默认账号：admin / admin123</div></form></body></html>`
 const dashboardPage = `<!doctype html><html><body><h2>CFRelay Dashboard</h2><a href='./certs'>证书工单</a><div style='display:flex;gap:16px'><canvas id='cpu' width='120' height='120'></canvas><canvas id='mem' width='120' height='120'></canvas><canvas id='bw' width='120' height='120'></canvas></div><div id='hint' style='color:red'></div><div id='ov'></div><script>
 function pie(id,p,t){const c=document.getElementById(id),x=c.getContext('2d');x.clearRect(0,0,120,120);x.beginPath();x.moveTo(60,60);x.fillStyle='#4caf50';x.arc(60,60,55,-Math.PI/2,-Math.PI/2+Math.PI*2*(p/100));x.fill();x.beginPath();x.moveTo(60,60);x.fillStyle='#ddd';x.arc(60,60,55,-Math.PI/2+Math.PI*2*(p/100),1.5*Math.PI);x.fill();x.fillStyle='#111';x.fillText(t+': '+p.toFixed(1)+'%',20,115)}
 async function load(){const r=await fetch(location.pathname.replace('/dashboard','/api/admin/overview'));const j=await r.json();const cpu=(j.rows.length?j.total_cpu/j.rows.length:0),mem=(j.rows.length?j.total_mem/j.rows.length:0),bw=(j.total_bw?j.used_bw*100/j.total_bw:0);pie('cpu',cpu,'CPU');pie('mem',mem,'MEM');pie('bw',bw,'BW');hint.textContent=j.nodes_needing_scale_hint?'所有节点接近满载，建议新增节点':'';ov.innerHTML=j.rows.map(function(n){return '<details><summary>'+n.node_id+' | CPU '+n.heartbeat.cpu_percent.toFixed(1)+'% | MEM '+n.heartbeat.mem_percent.toFixed(1)+'% | BW '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</summary><pre>'+JSON.stringify(n,null,2)+'</pre></details>'}).join('');}
