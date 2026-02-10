@@ -41,8 +41,8 @@ sysctl --system >/dev/null 2>&1 || true
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" "$REPO_DIR"
 else
-  git -C "$REPO_DIR" fetch origin "$REPO_BRANCH"
-  git -C "$REPO_DIR" checkout "$REPO_BRANCH"
+  git -C "$REPO_DIR" fetch origin "refs/heads/$REPO_BRANCH:refs/remotes/origin/$REPO_BRANCH"
+  git -C "$REPO_DIR" checkout -B "$REPO_BRANCH" "origin/$REPO_BRANCH"
   git -C "$REPO_DIR" reset --hard "origin/$REPO_BRANCH"
 fi
 
