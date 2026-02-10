@@ -65,6 +65,9 @@ sed -i "s|__NODE_ID__|$NODE_ID|g" /etc/systemd/system/cfrelay-agent.service
 
 bash scripts/optimize-bbr.sh
 systemctl daemon-reload
-systemctl enable --now cfrelay-agent
+systemctl enable cfrelay-agent
+# 强制重启，确保重新安装后配置和二进制立即生效
+systemctl restart cfrelay-agent
+systemctl is-active --quiet cfrelay-agent
 
 echo "agent installed"

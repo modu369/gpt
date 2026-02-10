@@ -96,7 +96,7 @@ Agent 转发注入：
 ## 11) 立即生效
 
 - 主控配置下发通过 Agent 3 秒轮询获取，实时热更新，无需重启服务进程。
-- 安装脚本会直接拉起 systemd 服务并立即生效。
+- 安装脚本会强制 `systemctl restart`，保证重新安装后立即生效（主控登录页和账号密码立即切换）。
 
 
 项目地址：`https://github.com/modu369/gpt/tree/codex/develop-high-performance-cloudflare-ip-forwarding-system`

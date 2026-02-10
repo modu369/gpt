@@ -75,6 +75,9 @@ sed -i "s|__MASTER_ADMIN_USER__|$MASTER_ADMIN_USER|g" /etc/systemd/system/cfrela
 sed -i "s|__MASTER_ADMIN_PASS__|$MASTER_ADMIN_PASS|g" /etc/systemd/system/cfrelay-master.service
 sed -i "s|__MASTER_ADMIN_TOKEN__|$MASTER_ADMIN_TOKEN|g" /etc/systemd/system/cfrelay-master.service
 systemctl daemon-reload
-systemctl enable --now cfrelay-master
+systemctl enable cfrelay-master
+# 强制重启，确保重新安装后配置和二进制立即生效
+systemctl restart cfrelay-master
+systemctl is-active --quiet cfrelay-master
 
 echo "master installed: http://<ip>${MASTER_LISTEN}/${MASTER_MARKER}/login"
