@@ -6,7 +6,7 @@
 
 ### 主控安装
 ```bash
-curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-master.sh | bash
+REPO_BRANCH=codex PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-master.sh | bash
 ```
 
 ### 被控安装（需主控 enrollment key）
@@ -14,6 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 MASTER_URL='http://<master-ip>:8080/<marker>' \
 ENROLL_KEY='change-me' \
 NODE_ID='relay-bj-01' \
+REPO_BRANCH=codex PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system \
 curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system/scripts/install-agent.sh | bash
 ```
 
@@ -23,10 +24,10 @@ curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-perf
 ```
 
 
-> 安装脚本已处理分支不存在的回退逻辑：
-> - 默认直接克隆仓库默认分支；
-> - 如需指定分支可传 `REPO_BRANCH=xxx`；若分支不存在会自动回退默认分支。
-> - 子目录默认 `PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system`，也可手动覆盖。
+> 安装脚本已固定默认分支为 `codex`，并建议在命令中显式传入：
+> - `REPO_BRANCH=codex`
+> - `PROJECT_SUBDIR=develop-high-performance-cloudflare-ip-forwarding-system`
+> 这样可以避免分支或目录识别偏差导致安装失败。
 
 ## 2) 主控/被控分离 + 可视化后台
 

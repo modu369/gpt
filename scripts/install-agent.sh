@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL=${REPO_URL:-https://github.com/modu369/gpt.git}
-REPO_BRANCH=${REPO_BRANCH:-}
+REPO_BRANCH=${REPO_BRANCH:-codex}
 PROJECT_SUBDIR=${PROJECT_SUBDIR:-develop-high-performance-cloudflare-ip-forwarding-system}
 INSTALL_DIR=${INSTALL_DIR:-/opt/cfrelay}
 
@@ -14,15 +14,11 @@ fi
 apt-get update
 apt-get install -y git curl golang ca-certificates ethtool certbot speedtest-cli
 rm -rf "$INSTALL_DIR"
-git clone "$REPO_URL" "$INSTALL_DIR"
-cd "$INSTALL_DIR"
 
-if [[ -n "$REPO_BRANCH" ]]; then
-  if git rev-parse --verify "origin/$REPO_BRANCH" >/dev/null 2>&1; then
-    git checkout -B "$REPO_BRANCH" "origin/$REPO_BRANCH"
-  else
-    echo "[WARN] branch '$REPO_BRANCH' not found, fallback to repository default branch"
-  fi
+if ! git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" "$INSTALL_DIR"; then
+  echo "[ERROR] failed to clone branch '$REPO_BRANCH' from $REPO_URL"
+  echo "[HINT] verify branch and repository path, current expected: codex"
+  exit 1
 fi
 
 PROJECT_DIR="$INSTALL_DIR"
@@ -34,7 +30,7 @@ fi
 
 if [[ ! -f "$PROJECT_DIR/cmd/agent/main.go" ]]; then
   echo "[ERROR] cmd/agent/main.go not found under PROJECT_DIR=$PROJECT_DIR"
-  echo "[HINT] set PROJECT_SUBDIR to the correct subdirectory, or keep empty when project is repo root"
+  echo "[HINT] set PROJECT_SUBDIR to the correct subdirectory"
   exit 1
 fi
 
