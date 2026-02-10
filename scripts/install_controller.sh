@@ -85,6 +85,18 @@ if ! curl -fsS "http://127.0.0.1:8080/$ADMIN_PATH/healthz" >/dev/null 2>&1; then
   exit 1
 fi
 
+
+# verify visual panel is actually deployed (not old plain instruction page)
+PAGE_HTML="$(curl -fsS "http://127.0.0.1:8080/$ADMIN_PATH" || true)"
+if ! printf '%s' "$PAGE_HTML" | grep -q "CF Relay 管理后台登录"; then
+  echo "ERROR: visual admin login page not detected at /$ADMIN_PATH"
+  echo "Current page snippet:"
+  printf '%s
+' "$PAGE_HTML" | head -n 20
+  echo "Hint: branch content may be outdated; expected file: controller/static/admin/index.html"
+  exit 1
+fi
+
 IP=$(hostname -I | awk '{print $1}')
 echo "Controller installed:"
 echo "Panel:  http://$IP:8080/$ADMIN_PATH"

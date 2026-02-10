@@ -93,3 +93,4 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
   - `journalctl -u cfrelay-controller -n 100 --no-pager`
 - 确认云厂商安全组/防火墙已放行 `TCP/8080`。
 - 若日志出现 `bcrypt` / `password cannot be longer than 72 bytes`，请更新到最新安装脚本后重装主控（已改为 `pbkdf2_sha256`，不再依赖 bcrypt 后端）。
+- 如果重装后仍看到旧的简陋说明页，先执行硬刷新（Ctrl+F5）并在服务器执行：`curl -fsSL http://127.0.0.1:8080/<admin_path> | head -n 5`，应看到 `CF Relay 管理后台登录`。
