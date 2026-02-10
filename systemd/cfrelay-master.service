@@ -1,0 +1,17 @@
+[Unit]
+Description=CF Relay Master
+After=network.target
+
+[Service]
+Type=simple
+Environment=MASTER_LISTEN=:8080
+Environment=MASTER_MARKER=tianyun123
+Environment=MASTER_ENROLL_KEY=change-me
+Environment=MASTER_ADMIN_TOKEN=admin-change-me
+WorkingDirectory=/opt/cfrelay
+ExecStart=/usr/local/bin/cfrelay-master
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

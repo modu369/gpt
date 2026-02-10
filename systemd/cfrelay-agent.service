@@ -1,0 +1,17 @@
+[Unit]
+Description=CF Relay Agent
+After=network.target
+
+[Service]
+Type=simple
+Environment=AGENT_MASTER=__MASTER_URL__
+Environment=AGENT_ENROLL_KEY=__ENROLL_KEY__
+Environment=AGENT_NODE_ID=__NODE_ID__
+WorkingDirectory=/opt/cfrelay
+ExecStart=/usr/local/bin/cfrelay-agent
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
