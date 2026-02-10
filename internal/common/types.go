@@ -22,6 +22,8 @@ type AgentConfig struct {
 	CFBackends             []CFBackend `json:"cf_backends"`
 	AutoCertWhenEmpty      bool        `json:"auto_cert_when_empty"`
 	MaxMbps                int         `json:"max_mbps"`
+	RequestSpeedtest       bool        `json:"request_speedtest"`
+	CertRetryDomains       []string    `json:"cert_retry_domains"`
 	TrafficLimitEnabled    bool        `json:"traffic_limit_enabled"`
 	TrafficLimitGB         int         `json:"traffic_limit_gb"`
 	TrafficWarnPercent     int         `json:"traffic_warn_percent"`
@@ -42,25 +44,26 @@ type CertTask struct {
 }
 
 type NodeHeartbeat struct {
-	NodeID         string    `json:"node_id"`
-	CPUPercent     float64   `json:"cpu_percent"`
-	MemPercent     float64   `json:"mem_percent"`
-	BandwidthMbps  float64   `json:"bandwidth_mbps"`
-	MaxBandwidth   float64   `json:"max_bandwidth_mbps"`
-	RxBytes        uint64    `json:"rx_bytes"`
-	TxBytes        uint64    `json:"tx_bytes"`
-	TrafficUsedGB  float64   `json:"traffic_used_gb"`
-	TrafficRemain  float64   `json:"traffic_remain_gb"`
-	OverloadReason string    `json:"overload_reason,omitempty"`
-	Timestamp      time.Time `json:"timestamp"`
+	NodeID             string    `json:"node_id"`
+	CPUPercent         float64   `json:"cpu_percent"`
+	MemPercent         float64   `json:"mem_percent"`
+	BandwidthMbps      float64   `json:"bandwidth_mbps"`
+	MaxBandwidth       float64   `json:"max_bandwidth_mbps"`
+	RxBytes            uint64    `json:"rx_bytes"`
+	TxBytes            uint64    `json:"tx_bytes"`
+	TrafficUsedGB      float64   `json:"traffic_used_gb"`
+	TrafficRemain      float64   `json:"traffic_remain_gb"`
+	LastSpeedtestMbps  float64   `json:"last_speedtest_mbps"`
+	SpeedtestUpdatedAt time.Time `json:"speedtest_updated_at"`
+	Timestamp          time.Time `json:"timestamp"`
 }
 
 type HuaweiDNSConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Endpoint     string `json:"endpoint"`
-	ZoneID       string `json:"zone_id"`
-	RecordsetID  string `json:"recordset_id"`
-	AccessKey    string `json:"access_key"`
-	SecretKey    string `json:"secret_key"`
-	SchedulerCNA string `json:"scheduler_cname"`
+	Enabled        bool   `json:"enabled"`
+	Endpoint       string `json:"endpoint"`
+	ZoneID         string `json:"zone_id"`
+	RecordsetID    string `json:"recordset_id"`
+	AccessKey      string `json:"access_key"`
+	SecretKey      string `json:"secret_key"`
+	SchedulerCNAME string `json:"scheduler_cname"`
 }

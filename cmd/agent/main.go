@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -26,15 +25,19 @@ import (
 )
 
 type runtime struct {
-	mu            sync.RWMutex
-	cfg           common.AgentConfig
-	backends      []common.CFBackend
-	rr            uint64
-	seenDomains   map[string]bool
-	rxBytes       uint64
-	txBytes       uint64
-	maxBandwidth  float64
-	lastNetSample time.Time
+	mu               sync.RWMutex
+	cfg              common.AgentConfig
+	backends         []common.CFBackend
+	rr               uint64
+	seenDomains      map[string]bool
+	certStatus       map[string]string
+	rxBytes          uint64
+	txBytes          uint64
+	maxBandwidth     float64
+	currentBandwidth float64
+	lastSpeedtest    float64
+	speedtestAt      time.Time
+	lastNetSample    time.Time
 }
 
 func main() {
@@ -43,6 +46,9 @@ func main() {
 	token := env("AGENT_TOKEN", "")
 	enrollKey := env("AGENT_ENROLL_KEY", "")
 	iface := env("AGENT_NET_IFACE", defaultIface())
+	acmeWebroot := env("AGENT_ACME_WEBROOT", "/var/lib/cfrelay/acme")
+	_ = os.MkdirAll(acmeWebroot, 0o755)
+
 	if token == "" && enrollKey != "" {
 		tk, err := enroll(master, enrollKey, nodeID)
 		if err != nil {
@@ -54,27 +60,36 @@ func main() {
 		log.Fatal("AGENT_TOKEN or AGENT_ENROLL_KEY is required")
 	}
 
-	rt := &runtime{seenDomains: map[string]bool{}, maxBandwidth: float64(max(0, mustInt(env("AGENT_MAX_BW", "0"))))}
+	rt := &runtime{seenDomains: map[string]bool{}, certStatus: map[string]string{}, maxBandwidth: float64(max(0, mustInt(env("AGENT_MAX_BW", "0"))))}
 	if rt.maxBandwidth == 0 {
 		rt.maxBandwidth = float64(detectMaxMbps(iface))
 	}
+	rt.lastSpeedtest = runSpeedtestMbps()
+	rt.speedtestAt = time.Now()
+	if rt.lastSpeedtest > 0 && (rt.maxBandwidth == 0 || rt.lastSpeedtest < rt.maxBandwidth) {
+		rt.maxBandwidth = rt.lastSpeedtest
+	}
+
 	ctx := context.Background()
 	go rt.syncLoop(ctx, master, token, nodeID)
 	go rt.healthLoop()
 	go rt.metricLoop(iface)
 	go rt.heartbeatLoop(master, token, nodeID)
+	go rt.renewLoop()
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := hostOnly(r.Host)
-		if rt.ensureCert(host, nodeID, master, token) != nil {
-			// fail-open for HTTP, fail-close for HTTPS
-			if r.TLS != nil {
-				http.Error(w, "certificate pending", http.StatusServiceUnavailable)
-				return
-			}
+		if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+			http.FileServer(http.Dir(acmeWebroot)).ServeHTTP(w, r)
+			return
 		}
 		if !rt.allowed(host) {
 			http.Error(w, "host blocked", http.StatusForbidden)
+			return
+		}
+		rt.ensureCert(host, acmeWebroot, nodeID, master, token)
+		if rt.certPending(host) {
+			http.Error(w, "certificate pending", http.StatusTooEarly)
 			return
 		}
 		if rt.pausedByPolicy() {
@@ -130,6 +145,16 @@ func (rt *runtime) syncLoop(ctx context.Context, master, token, nodeID string) {
 				if cfg.MaxMbps > 0 {
 					rt.maxBandwidth = float64(cfg.MaxMbps)
 				}
+				if cfg.RequestSpeedtest {
+					rt.lastSpeedtest = runSpeedtestMbps()
+					rt.speedtestAt = time.Now()
+					rt.cfg.RequestSpeedtest = false
+				}
+				for _, d := range cfg.CertRetryDomains {
+					rt.certStatus[d] = "pending"
+					rt.seenDomains[d] = false
+				}
+				rt.cfg.CertRetryDomains = nil
 				rt.mu.Unlock()
 			}
 			resp.Body.Close()
@@ -166,14 +191,10 @@ func (rt *runtime) metricLoop(iface string) {
 		d := time.Since(rt.lastNetSample).Seconds()
 		rxDelta := float64(rx-rt.rxBytes) * 8 / 1_000_000 / d
 		txDelta := float64(tx-rt.txBytes) * 8 / 1_000_000 / d
+		rt.currentBandwidth = rxDelta + txDelta
 		rt.rxBytes, rt.txBytes = rx, tx
 		rt.lastNetSample = time.Now()
-		rt.cfg.UpdatedAt = time.Now()
-		rt.cfg.MaxMbps = int(math.Max(rt.maxBandwidth, float64(rt.cfg.MaxMbps)))
 		rt.cfg.Paused = rt.evaluateLimit(rx, tx)
-		if rt.cfg.MaxMbps == 0 {
-			rt.cfg.MaxMbps = int(math.Max(rxDelta+txDelta, 1))
-		}
 		rt.mu.Unlock()
 	}
 }
@@ -190,7 +211,14 @@ func (rt *runtime) evaluateLimit(rx, tx uint64) bool {
 	if rt.cfg.TrafficMode == common.TrafficModeTx {
 		used = float64(tx)
 	}
-	return used >= limit
+	if used >= limit {
+		return true
+	}
+	remainPct := (limit - used) * 100 / limit
+	if rt.cfg.TrafficWarnPercent <= 0 {
+		return false
+	}
+	return remainPct < float64(rt.cfg.TrafficWarnPercent)
 }
 
 func (rt *runtime) pausedByPolicy() bool { rt.mu.RLock(); defer rt.mu.RUnlock(); return rt.cfg.Paused }
@@ -228,16 +256,15 @@ func (rt *runtime) heartbeatLoop(master, token, nodeID string) {
 		cpu, mem := cpuPercent(), memPercent()
 		rt.mu.RLock()
 		rx, tx := rt.rxBytes, rt.txBytes
-		bw := 0.0
-		if rt.lastNetSample.After(time.Now().Add(-5 * time.Second)) {
-			bw = float64(rt.cfg.MaxMbps)
-		}
+		bw := rt.currentBandwidth
 		cfg := rt.cfg
 		maxBW := rt.maxBandwidth
+		sptest := rt.lastSpeedtest
+		sptestAt := rt.speedtestAt
 		rt.mu.RUnlock()
 		used := float64(rx+tx) / (1024 * 1024 * 1024)
 		remain := float64(cfg.TrafficLimitGB) - used
-		hb := common.NodeHeartbeat{NodeID: nodeID, CPUPercent: cpu, MemPercent: mem, BandwidthMbps: bw, MaxBandwidth: maxBW, RxBytes: rx, TxBytes: tx, TrafficUsedGB: used, TrafficRemain: remain}
+		hb := common.NodeHeartbeat{NodeID: nodeID, CPUPercent: cpu, MemPercent: mem, BandwidthMbps: bw, MaxBandwidth: maxBW, RxBytes: rx, TxBytes: tx, TrafficUsedGB: used, TrafficRemain: remain, LastSpeedtestMbps: sptest, SpeedtestUpdatedAt: sptestAt}
 		b, _ := json.Marshal(hb)
 		req, _ := http.NewRequest(http.MethodPost, master+"/api/node/heartbeat", strings.NewReader(string(b)))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -248,37 +275,55 @@ func (rt *runtime) heartbeatLoop(master, token, nodeID string) {
 	}
 }
 
-func (rt *runtime) ensureCert(host, nodeID, master, token string) error {
+func (rt *runtime) certPending(host string) bool {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	v := rt.certStatus[host]
+	return v == "pending"
+}
+
+func (rt *runtime) ensureCert(host, webroot, nodeID, master, token string) {
 	rt.mu.Lock()
 	if rt.seenDomains[host] {
 		rt.mu.Unlock()
-		return nil
+		return
 	}
 	rt.seenDomains[host] = true
+	rt.certStatus[host] = "pending"
 	rt.mu.Unlock()
-	if !rt.allowed(host) {
-		return fmt.Errorf("not allowed")
+	go func() {
+		status := "issued"
+		errText := ""
+		if env("AGENT_CERTBOT", "0") == "1" {
+			cmd := exec.Command("certbot", "certonly", "--webroot", "-w", webroot, "-d", host, "--non-interactive", "--agree-tos", "-m", env("AGENT_CERT_EMAIL", "admin@example.com"))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				status = "failed"
+				errText = string(out)
+			}
+		} else {
+			status = "disabled"
+		}
+		rt.mu.Lock()
+		rt.certStatus[host] = status
+		rt.mu.Unlock()
+		task := common.CertTask{Domain: host, Method: "http", ManagedBy: nodeID, UpdatedAt: time.Now(), Status: status, LastError: errText}
+		b, _ := json.Marshal(task)
+		req, _ := http.NewRequest(http.MethodPost, master+"/api/node/cert", strings.NewReader(string(b)))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		if resp, e := (&http.Client{Timeout: 5 * time.Second}).Do(req); e == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+}
+
+func (rt *runtime) renewLoop() {
+	for range time.Tick(12 * time.Hour) {
+		if env("AGENT_CERTBOT", "0") != "1" {
+			continue
+		}
+		_ = exec.Command("certbot", "renew", "--non-interactive").Run()
 	}
-	if env("AGENT_CERTBOT", "0") != "1" {
-		return nil
-	}
-	cmd := exec.Command("certbot", "certonly", "--standalone", "-d", host, "--non-interactive", "--agree-tos", "-m", env("AGENT_CERT_EMAIL", "admin@example.com"))
-	out, err := cmd.CombinedOutput()
-	task := common.CertTask{Domain: host, Method: "http", ManagedBy: nodeID, UpdatedAt: time.Now()}
-	if err != nil {
-		task.Status = "failed"
-		task.LastError = string(out)
-	} else {
-		task.Status = "issued"
-	}
-	b, _ := json.Marshal(task)
-	req, _ := http.NewRequest(http.MethodPost, master+"/api/node/cert", strings.NewReader(string(b)))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	if resp, e := (&http.Client{Timeout: 5 * time.Second}).Do(req); e == nil {
-		_ = resp.Body.Close()
-	}
-	return err
 }
 
 func enroll(master, key, nodeID string) (string, error) {
@@ -374,8 +419,43 @@ func memPercent() float64 {
 	}
 	return (t - a) * 100 / t
 }
-func detectMaxMbps(_ string) int { return mustInt(env("AGENT_MAX_BW_FALLBACK", "1000")) }
-func defaultIface() string       { return env("AGENT_NET_IFACE_FALLBACK", "eth0") }
+
+func runSpeedtestMbps() float64 {
+	cmd := exec.Command("speedtest-cli", "--simple")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "Download:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				v, _ := strconv.ParseFloat(parts[1], 64)
+				return v
+			}
+		}
+	}
+	return 0
+}
+
+func detectMaxMbps(iface string) int {
+	if out, err := exec.Command("ethtool", iface).Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Speed:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "Speed:"))
+				v = strings.TrimSuffix(strings.TrimSuffix(v, "Mb/s"), "Mbps")
+				n, _ := strconv.Atoi(strings.TrimSpace(v))
+				if n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	return mustInt(env("AGENT_MAX_BW_FALLBACK", "1000"))
+}
+
+func defaultIface() string { return env("AGENT_NET_IFACE_FALLBACK", "eth0") }
 func hostOnly(h string) string {
 	if i := strings.Index(h, ":"); i > 0 {
 		return h[:i]

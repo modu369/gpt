@@ -24,17 +24,31 @@ type nodeState struct {
 	Heartbeat common.NodeHeartbeat `json:"heartbeat"`
 }
 
+type overloadEvent struct {
+	NodeID    string    `json:"node_id"`
+	Reason    string    `json:"reason"`
+	Count     int       `json:"count"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	Dismissed bool      `json:"dismissed"`
+}
+
 type state struct {
-	mu         sync.RWMutex
-	Nodes      map[string]*nodeState      `json:"nodes"`
-	Certs      map[string]common.CertTask `json:"certs"`
-	HuaweiDNS  common.HuaweiDNSConfig     `json:"huawei_dns"`
-	Overloads  []common.NodeHeartbeat     `json:"overloads"`
-	LastSynced time.Time                  `json:"last_synced"`
+	mu            sync.RWMutex
+	Nodes         map[string]*nodeState      `json:"nodes"`
+	Certs         map[string]common.CertTask `json:"certs"`
+	HuaweiDNS     common.HuaweiDNSConfig     `json:"huawei_dns"`
+	OverloadTable map[string]*overloadEvent  `json:"overload_table"`
+	LastResetYM   string                     `json:"last_reset_ym"`
 }
 
 func newState() *state {
-	return &state{Nodes: map[string]*nodeState{}, Certs: map[string]common.CertTask{}}
+	return &state{
+		Nodes:         map[string]*nodeState{},
+		Certs:         map[string]common.CertTask{},
+		OverloadTable: map[string]*overloadEvent{},
+		LastResetYM:   time.Now().Format("2006-01"),
+	}
 }
 
 func main() {
@@ -62,8 +76,7 @@ func main() {
 			_, _ = w.Write([]byte(loginPage))
 			return
 		}
-		user, pass := r.FormValue("username"), r.FormValue("password")
-		if user != adminUser || pass != adminPass {
+		if r.FormValue("username") != adminUser || r.FormValue("password") != adminPass {
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -72,7 +85,6 @@ func main() {
 		http.SetCookie(w, &http.Cookie{Name: "sid", Value: sid, Path: "/", HttpOnly: true, MaxAge: 86400})
 		http.Redirect(w, r, p+"/dashboard", http.StatusFound)
 	})
-
 	mux.HandleFunc(p+"/dashboard", authPage(sessions, p, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(dashboardPage))
@@ -137,11 +149,17 @@ func main() {
 			return
 		}
 		hb.Timestamp = time.Now()
-		if hb.CPUPercent >= 95 || hb.MemPercent >= 95 || (hb.MaxBandwidth > 0 && hb.BandwidthMbps/hb.MaxBandwidth >= 0.95) {
-			hb.OverloadReason = overloadReason(hb)
-			st.Overloads = append(st.Overloads, hb)
-		}
 		n.Heartbeat = hb
+		if reason := overloadReason(hb); reason != "" {
+			key := hb.NodeID + ":" + reason
+			ev := st.OverloadTable[key]
+			if ev == nil {
+				ev = &overloadEvent{NodeID: hb.NodeID, Reason: reason, FirstSeen: time.Now()}
+				st.OverloadTable[key] = ev
+			}
+			ev.Count++
+			ev.LastSeen = time.Now()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -168,12 +186,16 @@ func main() {
 	})
 
 	mux.HandleFunc(p+"/api/admin/node", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Admin-Token") != adminToken || r.Method != http.MethodPut {
+		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPut {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		var cfg common.AgentConfig
 		_ = json.NewDecoder(r.Body).Decode(&cfg)
+		if cfg.NodeID == "" {
+			http.Error(w, "node_id required", http.StatusBadRequest)
+			return
+		}
 		st.mu.Lock()
 		n := st.Nodes[cfg.NodeID]
 		if n == nil {
@@ -184,6 +206,24 @@ func main() {
 		n.Config = cfg
 		st.mu.Unlock()
 		_ = st.save(dataPath)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc(p+"/api/admin/node/retest", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r, adminToken, sessions) || r.Method != http.MethodPost {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		nodeID := r.URL.Query().Get("node_id")
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		n := st.Nodes[nodeID]
+		if n == nil {
+			http.Error(w, "node not found", http.StatusNotFound)
+			return
+		}
+		n.Config.RequestSpeedtest = true
+		n.Config.UpdatedAt = time.Now()
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -199,6 +239,10 @@ func main() {
 			t.UpdatedAt = time.Now()
 			st.mu.Lock()
 			st.Certs[t.Domain] = t
+			for _, n := range st.Nodes {
+				n.Config.CertRetryDomains = appendUnique(n.Config.CertRetryDomains, t.Domain)
+				n.Config.UpdatedAt = time.Now()
+			}
 			st.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -213,40 +257,74 @@ func main() {
 		_ = json.NewEncoder(w).Encode(arr)
 	})
 
+	mux.HandleFunc(p+"/api/admin/overloads", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r, adminToken, sessions) {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		if r.Method == http.MethodPost {
+			key := r.URL.Query().Get("key")
+			st.mu.Lock()
+			if ev := st.OverloadTable[key]; ev != nil {
+				ev.Dismissed = true
+			}
+			st.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		st.mu.RLock()
+		out := make([]*overloadEvent, 0, len(st.OverloadTable))
+		for _, ev := range st.OverloadTable {
+			out = append(out, ev)
+		}
+		st.mu.RUnlock()
+		sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+		_ = json.NewEncoder(w).Encode(out)
+	})
+
 	mux.HandleFunc(p+"/api/admin/overview", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r, adminToken, sessions) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
+		type row struct {
+			NodeID string               `json:"node_id"`
+			HB     common.NodeHeartbeat `json:"heartbeat"`
+			CFG    common.AgentConfig   `json:"config"`
+		}
 		type ov struct {
-			Nodes         map[string]*nodeState  `json:"nodes"`
-			TotalCPU      float64                `json:"total_cpu"`
-			TotalMem      float64                `json:"total_mem"`
-			TotalBW       float64                `json:"total_bw"`
-			UsedBW        float64                `json:"used_bw"`
-			OverloadCount int                    `json:"overload_count"`
-			CertCount     int                    `json:"cert_count"`
-			Overloads     []common.NodeHeartbeat `json:"overloads"`
+			Rows                  []row     `json:"rows"`
+			TotalCPU              float64   `json:"total_cpu"`
+			TotalMem              float64   `json:"total_mem"`
+			TotalBW               float64   `json:"total_bw"`
+			UsedBW                float64   `json:"used_bw"`
+			NodesNeedingScaleHint bool      `json:"nodes_needing_scale_hint"`
+			Timestamp             time.Time `json:"timestamp"`
 		}
 		st.mu.RLock()
 		defer st.mu.RUnlock()
-		o := ov{Nodes: st.Nodes, OverloadCount: len(st.Overloads), CertCount: len(st.Certs)}
-		for _, n := range st.Nodes {
+		o := ov{Timestamp: time.Now()}
+		for id, n := range st.Nodes {
+			o.Rows = append(o.Rows, row{NodeID: id, HB: n.Heartbeat, CFG: n.Config})
 			o.TotalCPU += n.Heartbeat.CPUPercent
 			o.TotalMem += n.Heartbeat.MemPercent
 			o.TotalBW += n.Heartbeat.MaxBandwidth
 			o.UsedBW += n.Heartbeat.BandwidthMbps
 		}
-		if len(st.Overloads) > 20 {
-			o.Overloads = st.Overloads[len(st.Overloads)-20:]
-		} else {
-			o.Overloads = st.Overloads
+		if len(o.Rows) > 0 {
+			full := 0
+			for _, r := range o.Rows {
+				if overloadReason(r.HB) != "" {
+					full++
+				}
+			}
+			o.NodesNeedingScaleHint = full == len(o.Rows)
 		}
 		_ = json.NewEncoder(w).Encode(o)
 	})
 
 	mux.HandleFunc(p+"/api/admin/dns/huawei", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Admin-Token") != adminToken {
+		if !isAdmin(r, adminToken, sessions) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -278,6 +356,15 @@ func main() {
 	log.Fatal(http.ListenAndServe(listen, logReq(mux)))
 }
 
+func appendUnique(arr []string, v string) []string {
+	for _, a := range arr {
+		if strings.EqualFold(a, v) {
+			return arr
+		}
+	}
+	return append(arr, v)
+}
+
 func (s *state) syncHuaweiDNS() (map[string]any, error) {
 	s.mu.RLock()
 	cfg := s.HuaweiDNS
@@ -293,14 +380,46 @@ func (s *state) syncHuaweiDNS() (map[string]any, error) {
 			weights[id] = score
 		}
 	}
-	return map[string]any{"zone_id": cfg.ZoneID, "recordset_id": cfg.RecordsetID, "weights": weights, "note": "ready to call Huawei API"}, nil
+	body := map[string]any{"zone_id": cfg.ZoneID, "recordset_id": cfg.RecordsetID, "scheduler_cname": cfg.SchedulerCNAME, "weights": weights}
+	if cfg.Endpoint != "" {
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, cfg.Endpoint, strings.NewReader(string(b)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Access-Key", cfg.AccessKey)
+		req.Header.Set("X-Secret-Key", cfg.SecretKey)
+		resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("dns sync failed status=%d", resp.StatusCode)
+		}
+	}
+	return map[string]any{"ok": true, "weights": weights}, nil
 }
 
 func (s *state) schedulerLoop(path string) {
 	for range time.Tick(12 * time.Second) {
-		_, _ = s.syncHuaweiDNS()
 		_ = s.save(path)
+		_ = s.maybeMonthlyReset()
+		_, _ = s.syncHuaweiDNS()
 	}
+}
+
+func (s *state) maybeMonthlyReset() error {
+	ym := time.Now().Format("2006-01")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.LastResetYM == ym {
+		return nil
+	}
+	for _, n := range s.Nodes {
+		n.Config.Paused = false
+		n.Config.UpdatedAt = time.Now()
+	}
+	s.LastResetYM = ym
+	return nil
 }
 
 func overloadReason(h common.NodeHeartbeat) string {
@@ -313,7 +432,7 @@ func overloadReason(h common.NodeHeartbeat) string {
 	if h.MaxBandwidth > 0 && h.BandwidthMbps/h.MaxBandwidth >= 0.95 {
 		return "bandwidth"
 	}
-	return "unknown"
+	return ""
 }
 
 func pct(v, max float64) float64 {
@@ -322,7 +441,6 @@ func pct(v, max float64) float64 {
 	}
 	return (v / max) * 100
 }
-
 func isAdmin(r *http.Request, t string, sessions *sync.Map) bool {
 	if r.Header.Get("X-Admin-Token") == t {
 		return true
@@ -334,22 +452,20 @@ func isAdmin(r *http.Request, t string, sessions *sync.Map) bool {
 	_, ok := sessions.Load(c.Value)
 	return ok
 }
-
 func authPage(s *sync.Map, p string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie("sid")
 		if err != nil {
-			http.Redirect(w, r, p+"/login", http.StatusFound)
+			http.Redirect(w, r, p+"/login", 302)
 			return
 		}
 		if _, ok := s.Load(c.Value); !ok {
-			http.Redirect(w, r, p+"/login", http.StatusFound)
+			http.Redirect(w, r, p+"/login", 302)
 			return
 		}
 		next(w, r)
 	}
 }
-
 func (s *state) save(path string) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -370,6 +486,9 @@ func (s *state) load(path string) {
 	if s.Certs == nil {
 		s.Certs = map[string]common.CertTask{}
 	}
+	if s.OverloadTable == nil {
+		s.OverloadTable = map[string]*overloadEvent{}
+	}
 }
 func token(n int) string { b := make([]byte, n); _, _ = rand.Read(b); return hex.EncodeToString(b) }
 func env(k, d string) string {
@@ -386,5 +505,10 @@ func logReq(next http.Handler) http.Handler {
 }
 
 const loginPage = `<!doctype html><html><body><h3>CFRelay Login</h3><form method="post"><input name="username" placeholder="user"/><input name="password" type="password" placeholder="password"/><button>Login</button></form></body></html>`
-const dashboardPage = `<!doctype html><html><body><h2>CFRelay Dashboard</h2><pre id='d'>loading...</pre><script>fetch(location.pathname.replace('/dashboard','/api/admin/overview')).then(r=>r.json()).then(j=>d.textContent=JSON.stringify(j,null,2))</script></body></html>`
-const settingsPage = `<!doctype html><html><body><h2>Settings</h2><p>Use API with X-Admin-Token to modify marker/ports/service env.</p></body></html>`
+const dashboardPage = `<!doctype html><html><body><h2>CFRelay Dashboard</h2><div style='display:flex;gap:16px'><canvas id='cpu' width='120' height='120'></canvas><canvas id='mem' width='120' height='120'></canvas><canvas id='bw' width='120' height='120'></canvas></div><div id='hint' style='color:red'></div><div id='ov'></div><script>
+function pie(id,p,t){const c=document.getElementById(id),x=c.getContext('2d');x.clearRect(0,0,120,120);x.beginPath();x.moveTo(60,60);x.fillStyle='#4caf50';x.arc(60,60,55,-Math.PI/2,-Math.PI/2+Math.PI*2*(p/100));x.fill();x.beginPath();x.moveTo(60,60);x.fillStyle='#ddd';x.arc(60,60,55,-Math.PI/2+Math.PI*2*(p/100),1.5*Math.PI);x.fill();x.fillStyle='#111';x.fillText(t+': '+p.toFixed(1)+'%',20,115)}
+async function load(){const r=await fetch(location.pathname.replace('/dashboard','/api/admin/overview'));const j=await r.json();const cpu=(j.rows.length?j.total_cpu/j.rows.length:0),mem=(j.rows.length?j.total_mem/j.rows.length:0),bw=(j.total_bw?j.used_bw*100/j.total_bw:0);pie('cpu',cpu,'CPU');pie('mem',mem,'MEM');pie('bw',bw,'BW');hint.textContent=j.nodes_needing_scale_hint?'所有节点接近满载，建议新增节点':'';ov.innerHTML=j.rows.map(function(n){return '<details><summary>'+n.node_id+' | CPU '+n.heartbeat.cpu_percent.toFixed(1)+'% | MEM '+n.heartbeat.mem_percent.toFixed(1)+'% | BW '+n.heartbeat.bandwidth_mbps.toFixed(1)+'/'+n.heartbeat.max_bandwidth_mbps.toFixed(1)+' Mbps</summary><pre>'+JSON.stringify(n,null,2)+'</pre></details>'}).join('');}
+load();setInterval(load,3000);
+</script></body></html>`
+
+const settingsPage = `<!doctype html><html><body><h2>Settings</h2><p>可通过 systemd 环境变量修改端口和 marker。配置 API: /api/admin/node /api/admin/dns/huawei</p></body></html>`

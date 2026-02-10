@@ -1,31 +1,48 @@
 # 华为云国际站 DNS 权重自动调度
 
-## 已实现能力
+## 功能
 
-主控 `POST /<marker>/api/admin/dns/huawei` 可执行一次调度计算：
+主控支持：
+- `GET /<marker>/api/admin/dns/huawei` 查看配置
+- `PUT /<marker>/api/admin/dns/huawei` 保存配置
+- `POST /<marker>/api/admin/dns/huawei` 执行同步
 
-1. 汇总每个节点实时负载（CPU/内存/带宽占比）。
-2. 计算 `score = 100 - max(cpu, mem, bwPercent)`。
-3. `score <= 0` 或 `node.paused=true` 的节点不参与解析池。
-4. 输出各节点权重映射，供华为云 DNS Recordset 更新。
+## 权重算法
 
-## 配置接口
+对每个节点计算：
 
-- `GET /api/admin/dns/huawei`：查看配置。
-- `PUT /api/admin/dns/huawei`：保存配置。
-- `POST /api/admin/dns/huawei`：执行一次同步并返回权重结果。
+`score = 100 - max(cpu%, mem%, bandwidth%)`
 
-配置字段：
-- `enabled`
-- `endpoint`
-- `zone_id`
-- `recordset_id`
-- `access_key`
-- `secret_key`
-- `scheduler_cname`
+其中 `bandwidth% = current_bandwidth / max_bandwidth * 100`。
 
-## 下一步（可继续）
+过滤规则：
+- `score <= 0` 的节点剔除
+- `node.config.paused = true` 的节点剔除
 
-- 补充华为云 API HMAC 签名请求。
-- 将权重计算结果写入 A/AAAA/CNAME Recordset 的 `weight`。
-- 增加失败重试与回滚。
+剩余节点的 score 作为权重。
+
+## 自动化执行
+
+主控后台协程每 12 秒执行一次：
+1. 每月重置暂停状态（新月自动恢复节点）。
+2. 重新计算节点权重。
+3. 如果配置了 `endpoint`，向 endpoint POST 权重结果。
+
+请求头：
+- `X-Access-Key`
+- `X-Secret-Key`
+
+请求体示例：
+```json
+{
+  "zone_id": "...",
+  "recordset_id": "...",
+  "scheduler_cname": "relay.example.com",
+  "weights": {
+    "relay-bj-01": 81,
+    "relay-sh-01": 74
+  }
+}
+```
+
+> 说明：不同华为云账户/API网关可能需要额外签名流程，可在 endpoint 网关内完成签名转发。

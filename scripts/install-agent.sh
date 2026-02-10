@@ -9,7 +9,7 @@ if [[ -z "${MASTER_URL:-}" || -z "${ENROLL_KEY:-}" || -z "${NODE_ID:-}" ]]; then
 fi
 
 apt-get update
-apt-get install -y git curl golang ca-certificates ethtool certbot
+apt-get install -y git curl golang ca-certificates ethtool certbot speedtest-cli
 rm -rf "$INSTALL_DIR"
 git clone "$REPO_URL" "$INSTALL_DIR"
 cd "$INSTALL_DIR"
