@@ -50,4 +50,8 @@ SERVICE
 systemctl daemon-reload
 systemctl enable --now cfrelay-controller
 
-echo "Controller installed: http://$(hostname -I | awk '{print $1}'):8080/$ADMIN_PATH/api"
+IP=$(hostname -I | awk '{print $1}')
+echo "Controller installed:"
+echo "Panel: http://$IP:8080/$ADMIN_PATH"
+echo "API:   http://$IP:8080/$ADMIN_PATH/api"
+echo "Docs:  http://$IP:8080/$ADMIN_PATH/api/docs"

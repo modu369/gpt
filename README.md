@@ -42,6 +42,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
   --node-name relay-bj-01
 ```
 
+## 访问入口
+
+- 控制台入口：`http://<controller-ip>:8080/<admin_path>`
+- API 基础：`http://<controller-ip>:8080/<admin_path>/api`
+- API 文档：`http://<controller-ip>:8080/<admin_path>/api/docs`
+
 ## 主要 API
 
 - 登录：`POST /{admin_path}/api/auth/login`

@@ -4,6 +4,7 @@ from typing import List
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -22,8 +23,12 @@ from .security import create_access_token, decode_token, verify_password
 from .services.huawei_dns import NodeWeight, compute_weight, update_weighted_records
 
 
-app = FastAPI(title="CF Relay Controller")
 base = f"/{settings.admin_path}/api"
+app = FastAPI(
+    title="CF Relay Controller",
+    docs_url=f"{base}/docs",
+    openapi_url=f"{base}/openapi.json",
+)
 
 
 class LoginIn(BaseModel):
@@ -91,6 +96,28 @@ def auth(authorization: str = Header(default=""), session: Session = Depends(get
 def startup() -> None:
     init_db()
 
+
+
+
+@app.get(f"/{settings.admin_path}", response_class=HTMLResponse)
+def panel_entry():
+    return f"""
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CF Relay Panel</title></head>
+<body style="font-family:Arial;max-width:760px;margin:40px auto;line-height:1.6">
+  <h2>CF Relay Controller Panel</h2>
+  <p>控制台入口已生效：<code>/{settings.admin_path}</code></p>
+  <p>API 基础路径：<code>/{settings.admin_path}/api</code></p>
+  <p>你可以先调用登录接口获取 JWT：</p>
+  <pre>POST /{settings.admin_path}/api/auth/login</pre>
+  <p><a href="/{settings.admin_path}/api/docs">打开 Swagger API 文档</a></p>
+</body></html>
+"""
+
+
+@app.get(f"/{settings.admin_path}/", response_class=HTMLResponse)
+def panel_entry_slash():
+    return panel_entry()
 
 @app.post(f"{base}/auth/login", response_model=TokenOut)
 def login(data: LoginIn, session: Session = Depends(get_session)):
