@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_DIR="/opt/cfrelay"
 APP_DIR="$REPO_DIR/agent"
 VENV_DIR="$REPO_DIR/.venv"
+REPO_URL="https://github.com/modu369/gpt.git"
+REPO_BRANCH="codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi51d"
 
 CONTROLLER=""
 TOKEN=""
@@ -38,7 +40,7 @@ SYS
 sysctl --system >/dev/null 2>&1 || true
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
-  git clone https://github.com/<your-org>/<your-repo>.git "$REPO_DIR"
+  git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" "$REPO_DIR"
 else
   git -C "$REPO_DIR" pull --ff-only
 fi
