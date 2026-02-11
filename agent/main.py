@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import secrets
 import socket
 import subprocess
 import time
@@ -23,10 +24,16 @@ class ConfigIn(BaseModel):
     whitelist: list[str]
     cf_ips: list[dict]
     certificates: list[dict] = []
+    challenges: list[dict] = []
     updated_at: str
 
 
 class CertApplyIn(BaseModel):
+    domain: str
+    verify_mode: str = "http"
+
+
+class CertPrecheckIn(BaseModel):
     domain: str
     verify_mode: str = "http"
 
@@ -52,9 +59,12 @@ def apply_config(data: ConfigIn, x_agent_secret: str = Header(default="")):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     state_path = Path(settings.state_dir) / "runtime_config.json"
-    state_path.write_text(json.dumps(data.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+    dumped = data.model_dump()
+    state_path.write_text(json.dumps(dumped, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    cfg_text = render(data.model_dump())
+    _sync_challenge_files(dumped.get("challenges", []))
+
+    cfg_text = render(dumped)
     cfg_path = Path(settings.haproxy_cfg)
     cfg_path.write_text(cfg_text, encoding="utf-8")
 
@@ -76,6 +86,25 @@ async def cert_apply(data: CertApplyIn, x_agent_secret: str = Header(default="")
     if not ok:
         return {"ok": False, "status": status, "detail": detail}
     return {"ok": True, "status": status, "detail": detail}
+
+
+@app.post("/agent/cert/precheck")
+def cert_precheck(data: CertPrecheckIn, x_agent_secret: str = Header(default="")):
+    if x_agent_secret != settings.shared_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    domain = data.domain.strip().lower()
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain required")
+    if data.verify_mode == "http":
+        if not _domain_resolves_to_node(domain):
+            return {"ok": False, "mode": "http", "detail": "domain not resolved to node ip"}
+        test_token = f"precheck-{int(time.time())}"
+        p = Path(WWWROOT) / test_token
+        p.write_text("ok", encoding="utf-8")
+        return {"ok": True, "mode": "http", "detail": "local http challenge path writable", "path": str(p)}
+    token = secrets_token()
+    value = f"_acme-challenge.{domain} TXT {token}"
+    return {"ok": True, "mode": "dns", "detail": "请添加以下DNS TXT记录后再点击验证", "dns_instruction": value, "txt_value": token}
 
 
 @app.post("/agent/network/speedtest")

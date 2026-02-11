@@ -1,4 +1,6 @@
-from datetime import datetime
+from datetime import datetime, time
+import asyncio
+import subprocess
 from pathlib import Path
 import secrets
 from typing import List
@@ -7,15 +9,17 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, desc, select
 
 from .config import settings
-from .db import get_session, init_db
+from .db import engine, get_session, init_db
 from .models import (
     Admin,
     CertificateRecord,
     CfIp,
     DnsScheduleConfig,
+    AcmeChallenge,
+    OverloadEvent,
     Node,
     NodeToken,
     SystemSetting,
@@ -97,6 +101,19 @@ class SettingsIn(BaseModel):
     default_admin_password: str
 
 
+class NodeTrafficIn(BaseModel):
+    enabled: bool = False
+    monthly_limit_gb: int = 0
+    count_mode: str = "both"
+    low_threshold_percent: int = 10
+
+
+class ChallengeSyncIn(BaseModel):
+    domain: str
+    token: str
+    content: str
+
+
 def auth(authorization: str = Header(default=""), session: Session = Depends(get_session)) -> Admin:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -112,8 +129,9 @@ def auth(authorization: str = Header(default=""), session: Session = Depends(get
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    asyncio.create_task(cf_ip_health_loop())
 
 
 def get_system_setting(session: Session) -> SystemSetting:
@@ -126,7 +144,7 @@ def get_system_setting(session: Session) -> SystemSetting:
     return cfg
 
 def _expanded_cf_ips(session: Session) -> list[dict]:
-    rows = session.exec(select(CfIp).where(CfIp.enabled == True)).all()  # noqa: E712
+    rows = session.exec(select(CfIp).where(CfIp.enabled == True, CfIp.healthy == True)).all()  # noqa: E712
     result = []
     for x in rows:
         result.append({"ip": x.ip, "port": 80})
@@ -141,7 +159,8 @@ async def push_node_config(node: Node, session: Session) -> dict:
         {"domain": c.domain, "status": c.status, "verify_mode": c.verify_mode}
         for c in session.exec(select(CertificateRecord)).all()
     ]
-    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "updated_at": datetime.utcnow().isoformat()}
+    challenges = [{"domain": c.domain, "token": c.token, "content": c.content} for c in session.exec(select(AcmeChallenge).where(AcmeChallenge.status == "pending")).all()]
+    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "challenges": challenges, "updated_at": datetime.utcnow().isoformat()}
 
     async with httpx.AsyncClient(timeout=8.0) as client:
         r = await client.post(
@@ -161,7 +180,8 @@ async def push_all_nodes(session: Session) -> dict:
         {"domain": c.domain, "status": c.status, "verify_mode": c.verify_mode}
         for c in session.exec(select(CertificateRecord)).all()
     ]
-    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "updated_at": datetime.utcnow().isoformat()}
+    challenges = [{"domain": c.domain, "token": c.token, "content": c.content} for c in session.exec(select(AcmeChallenge).where(AcmeChallenge.status == "pending")).all()]
+    payload = {"whitelist": whitelist, "cf_ips": cf_ips, "certificates": certs, "challenges": challenges, "updated_at": datetime.utcnow().isoformat()}
 
     results = []
     async with httpx.AsyncClient(timeout=8.0) as client:
@@ -177,6 +197,62 @@ async def push_all_nodes(session: Session) -> dict:
                 results.append({"node": n.name, "error": str(exc)})
     return {"results": results}
 
+
+
+
+async def cf_ip_health_loop() -> None:
+    while True:
+        try:
+            with Session(engine) as session:
+                changed = False
+                ips = session.exec(select(CfIp)).all()
+                for x in ips:
+                    ok = subprocess.run(
+                        ["ping", "-c", "1", "-W", "1", x.ip],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    ).returncode == 0
+                    prev = x.healthy
+                    if ok:
+                        x.healthy = True
+                        x.fail_count = 0
+                    else:
+                        x.fail_count = (x.fail_count or 0) + 1
+                        if x.fail_count >= 2:
+                            x.healthy = False
+                    x.last_checked_at = datetime.utcnow()
+                    if prev != x.healthy:
+                        changed = True
+                    session.add(x)
+                session.commit()
+                if changed:
+                    await push_all_nodes(session)
+        except Exception:
+            pass
+        await asyncio.sleep(5)
+
+
+def record_overload_event(session: Session, node: Node, reason: str, value: float, threshold: float) -> None:
+    now = datetime.utcnow()
+    day_start = datetime.combine(now.date(), time.min)
+    recent = session.exec(
+        select(OverloadEvent)
+        .where(
+            OverloadEvent.node_name == node.name,
+            OverloadEvent.reason == reason,
+            OverloadEvent.occurred_at >= day_start,
+        )
+        .order_by(desc(OverloadEvent.occurred_at))
+    ).first()
+    if recent:
+        recent.count += 1
+        recent.value = value
+        recent.threshold = threshold
+        recent.occurred_at = now
+        session.add(recent)
+    else:
+        session.add(OverloadEvent(node_name=node.name, reason=reason, value=value, threshold=threshold, occurred_at=now))
 
 @app.get(f"/{settings.admin_path}/healthz")
 def panel_healthz():
@@ -368,10 +444,30 @@ def report_metrics(node_name: str, data: NodeMetricIn, x_agent_secret: str = Hea
     node.monthly_traffic_used_gb = data.monthly_traffic_used_gb
     node.online = True
     node.updated_at = datetime.utcnow()
+    if node.used_cpu_percent >= 90:
+        record_overload_event(session, node, "cpu", node.used_cpu_percent, 90)
+    mem_ratio = (node.used_memory_mb / node.memory_mb * 100) if node.memory_mb else 0
+    if mem_ratio >= 90:
+        record_overload_event(session, node, "memory", mem_ratio, 90)
+    bw_ratio = (node.used_bandwidth_mbps / node.max_bandwidth_mbps * 100) if node.max_bandwidth_mbps else 0
+    if bw_ratio >= 90:
+        record_overload_event(session, node, "bandwidth", bw_ratio, 90)
+
     if node.traffic_limit_enabled and node.monthly_traffic_limit_gb > 0:
         ratio = node.monthly_traffic_used_gb / node.monthly_traffic_limit_gb
-        if ratio >= 1.0:
+        remain_percent = max(0.0, (1 - ratio) * 100)
+        if remain_percent <= node.traffic_low_threshold_percent:
             node.enabled = False
+            node.traffic_suspended = True
+            node.traffic_suspended_month = datetime.utcnow().strftime("%Y-%m")
+            record_overload_event(session, node, "traffic", remain_percent, node.traffic_low_threshold_percent)
+        # auto resume next month
+        current_month = datetime.utcnow().strftime("%Y-%m")
+        if node.traffic_suspended and node.traffic_suspended_month and node.traffic_suspended_month != current_month:
+            node.enabled = True
+            node.traffic_suspended = False
+            node.monthly_traffic_used_gb = 0
+
     session.add(node)
     session.commit()
     return {"ok": True}
@@ -411,6 +507,49 @@ def overview(_: Admin = Depends(auth), session: Session = Depends(get_session)):
 @app.get(f"{base}/nodes")
 def list_nodes(_: Admin = Depends(auth), session: Session = Depends(get_session)):
     return session.exec(select(Node)).all()
+
+
+@app.post(f"{base}/nodes/{{node_name}}/traffic-config")
+def set_node_traffic_config(node_name: str, data: NodeTrafficIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    node = session.exec(select(Node).where(Node.name == node_name)).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="node not found")
+    node.traffic_limit_enabled = data.enabled
+    node.monthly_traffic_limit_gb = data.monthly_limit_gb
+    node.traffic_count_mode = data.count_mode
+    node.traffic_low_threshold_percent = data.low_threshold_percent
+    session.add(node)
+    session.commit()
+    return {"ok": True}
+
+
+@app.get(f"{base}/overload-events")
+def list_overload_events(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    return session.exec(select(OverloadEvent).order_by(OverloadEvent.occurred_at.desc())).all()
+
+
+@app.delete(f"{base}/overload-events")
+def clear_overload_events(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rows = session.exec(select(OverloadEvent)).all()
+    for r in rows:
+        session.delete(r)
+    session.commit()
+    return {"ok": True, "count": len(rows)}
+
+
+@app.post(f"{base}/acme/challenges")
+async def add_challenge(data: ChallengeSyncIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rec = session.exec(select(AcmeChallenge).where(AcmeChallenge.domain == data.domain, AcmeChallenge.token == data.token)).first()
+    if not rec:
+        rec = AcmeChallenge(domain=data.domain, token=data.token, content=data.content, status="pending")
+    else:
+        rec.content = data.content
+        rec.status = "pending"
+        rec.updated_at = datetime.utcnow()
+    session.add(rec)
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True}
 
 
 @app.post(f"{base}/whitelist")
@@ -469,8 +608,8 @@ async def delete_cf_ip(ip: str, _: Admin = Depends(auth), session: Session = Dep
 
 @app.get(f"{base}/cf-ips")
 def list_cf_ips(_: Admin = Depends(auth), session: Session = Depends(get_session)):
-    rows = session.exec(select(CfIp).where(CfIp.enabled == True)).all()  # noqa: E712
-    return [{"ip": x.ip, "ports": [80, 443], "enabled": x.enabled} for x in rows]
+    rows = session.exec(select(CfIp).where(CfIp.enabled == True, CfIp.healthy == True)).all()  # noqa: E712
+    return [{"ip": x.ip, "ports": [80, 443], "enabled": x.enabled, "healthy": x.healthy, "fail_count": x.fail_count, "last_checked_at": x.last_checked_at} for x in rows]
 
 
 @app.post(f"{base}/dns/config")
@@ -529,6 +668,33 @@ def reconcile_dns(_: Admin = Depends(auth), session: Session = Depends(get_sessi
     return {"ok": True, "message": message, "targets": [c.__dict__ for c in candidates]}
 
 
+@app.post(f"{base}/certificates/{{domain}}/precheck")
+async def precheck_certificate(domain: str, verify_mode: str = "http", _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    nodes: List[Node] = session.exec(select(Node).where(Node.enabled == True)).all()  # noqa: E712
+    if not nodes:
+        raise HTTPException(status_code=400, detail="no enabled nodes")
+    n = nodes[0]
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{n.endpoint.rstrip('/')}/agent/cert/precheck",
+            json={"domain": domain, "verify_mode": verify_mode},
+            headers={"X-Agent-Secret": n.shared_secret},
+        )
+    data = r.json()
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=data)
+    if verify_mode == "dns" and data.get("ok"):
+        token = data.get("txt_value", "")
+        content = data.get("txt_value", "")
+        if token:
+            chall = session.exec(select(AcmeChallenge).where(AcmeChallenge.domain == domain, AcmeChallenge.token == token)).first()
+            if not chall:
+                chall = AcmeChallenge(domain=domain, token=token, content=content, verify_mode="dns", status="pending")
+            session.add(chall)
+            session.commit()
+    return data
+
+
 @app.post(f"{base}/certificates/manual")
 async def add_certificate_manual(data: CertRequestIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == data.domain)).first()
@@ -541,6 +707,13 @@ async def add_certificate_manual(data: CertRequestIn, _: Admin = Depends(auth), 
     rec.updated_at = datetime.utcnow()
     session.add(rec)
     session.commit()
+    pre = await precheck_certificate(data.domain, data.verify_mode, _, session)
+    if not pre.get("ok"):
+        rec.status = "failed"
+        rec.fail_reason = str(pre)
+        session.add(rec)
+        session.commit()
+        return {"precheck": pre}
     return await dispatch_certificate_apply(data.domain, data.verify_mode, session)
 
 

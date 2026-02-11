@@ -39,6 +39,9 @@ class Node(SQLModel, table=True):
     monthly_traffic_used_gb: float = 0
     traffic_limit_enabled: bool = False
     traffic_count_mode: str = "both"  # both|ingress|egress
+    traffic_low_threshold_percent: int = 10
+    traffic_suspended: bool = False
+    traffic_suspended_month: str = ""
     last_speedtest_at: datetime = Field(default_factory=datetime.utcnow)
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -61,6 +64,9 @@ class CfIp(SQLModel, table=True):
     ip: str = Field(index=True, unique=True)
     port: int = 443
     enabled: bool = True
+    healthy: bool = True
+    fail_count: int = 0
+    last_checked_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class DnsScheduleConfig(SQLModel, table=True):
@@ -82,3 +88,23 @@ class CertificateRecord(SQLModel, table=True):
     last_synced_node: str = ""
     cert_expires_at: str = ""
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AcmeChallenge(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    domain: str = Field(index=True)
+    token: str = Field(index=True)
+    content: str
+    verify_mode: str = "http"
+    status: str = "pending"
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OverloadEvent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    node_name: str = Field(index=True)
+    reason: str
+    value: float = 0
+    threshold: float = 0
+    count: int = 1
+    occurred_at: datetime = Field(default_factory=datetime.utcnow)
