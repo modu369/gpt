@@ -11,6 +11,16 @@
   - 主控支持手动发起申请、失败重试
   - 被控端通过 `acme.sh` 自动申请并安装证书（HTTP 验证）
   - 申请成功自动 `reload haproxy`
+- P2 性能与稳定性增强
+  - Agent 上游转发改为全局 `httpx.AsyncClient` 连接池复用（keepalive）
+  - CF IP 健康探测升级为三层探测（ICMP + TCP:443 + TCP:80），输出健康分数
+  - DNS 自动调度新增防抖阈值（debounce）避免高频震荡
+  - 提供 `scripts/benchmark_relay.sh` 基线压测脚本（direct vs relay）
+- P3 可视化与运维增强
+  - 超载中心支持筛选、分页、确认/备注、CSV 导出
+  - 首页新增可关闭的超载横幅提示（会话记忆）
+  - 节点卡片支持折叠展开并内置单节点操作按钮
+  - 新增审计日志接口与页面：记录设置变更、流量策略变更、超载确认/清理
 
 ## 架构
 
@@ -29,13 +39,13 @@
 ### 主控（Debian 12）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi51d/scripts/install_controller.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_controller.sh)
 ```
 
 ### 被控（Debian 12）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-high-performance-cloudflare-ip-forwarding-system-qbi51d/scripts/install_agent.sh) \
+bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh) \
   --controller http://<controller-ip>:8080 \
   --admin-path panel \
   --token <node-install-token> \
@@ -84,6 +94,32 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/develop-hi
 - `HUAWEI_DNS_RECORDSET`
 
 未配置 SDK 或 AK/SK 时将进入 dry-run，便于先联调流程。
+
+## P2 运行参数（可选）
+
+主控：
+
+- `DNS_AUTO_RECONCILE=1`
+- `CERT_DNS_V2=1`
+- `UI_V2=1`（控制 P3 页面增强开关）
+
+被控（连接池）：
+
+- `UPSTREAM_TIMEOUT_S`（默认 `15`）
+- `POOL_MAX_CONNECTIONS`（默认 `200`）
+- `POOL_MAX_KEEPALIVE_CONNECTIONS`（默认 `80`）
+- `POOL_KEEPALIVE_EXPIRY_S`（默认 `30`）
+
+## 压测脚本
+
+```bash
+./scripts/benchmark_relay.sh \
+  --direct https://origin.example.com/health \
+  --relay  https://relay.example.com/health \
+  --requests 50
+```
+
+输出包含 `avg` / `p95` / 失败数，可用于对比 relay 与直连差距。
 
 
 ## 常见排障

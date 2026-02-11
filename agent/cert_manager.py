@@ -34,7 +34,17 @@ def ensure_certificate(domain: str, verify_mode: str = "http") -> Tuple[bool, st
     if verify_mode == "http":
         issue_cmd = [ACME_SH, "--issue", "-d", domain, "--webroot", WWWROOT, "--keylength", "ec-256"]
     else:
-        return False, "failed", "dns mode requires provider-specific env; not configured"
+        issue_cmd = [
+            ACME_SH,
+            "--issue",
+            "-d",
+            domain,
+            "--dns",
+            "dns_manual",
+            "--yes-I-know-dns-manual-mode-enough-go-ahead-please",
+            "--keylength",
+            "ec-256",
+        ]
 
     ok, issue_out = _run(issue_cmd)
     if not ok:
