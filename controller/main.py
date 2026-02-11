@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 import secrets
@@ -135,6 +136,14 @@ class CertDnsVerifyIn(BaseModel):
     challenge_id: int
 
 
+class RuntimeApplyIn(BaseModel):
+    keep_old_path_minutes: int = 15
+
+
+class ChallengeCleanupIn(BaseModel):
+    retain_recent: int = 1
+
+
 def auth(authorization: str = Header(default=""), session: Session = Depends(get_session)) -> Admin:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -153,6 +162,32 @@ _last_dns_signature = ""
 _last_dns_weights: dict[str, int] = {}
 
 
+def _normalize_panel_path(v: str) -> str:
+    return (v or "").strip().strip("/")
+
+
+def _path_window_is_active(cfg: SystemSetting) -> bool:
+    return bool(cfg.pending_admin_path and cfg.path_switch_deadline and cfg.path_switch_deadline > datetime.utcnow())
+
+
+def _normalize_runtime_window(session: Session, cfg: SystemSetting) -> None:
+    if cfg.pending_admin_path and cfg.path_switch_deadline and cfg.path_switch_deadline <= datetime.utcnow():
+        cfg.pending_admin_path = ""
+        cfg.path_switch_deadline = None
+        session.add(cfg)
+        session.commit()
+
+
+def _runtime_paths(session: Session) -> tuple[str, str, str, datetime | None]:
+    cfg = get_system_setting(session)
+    _normalize_runtime_window(session, cfg)
+    effective = _normalize_panel_path(cfg.effective_admin_path or cfg.admin_path or settings.admin_path) or settings.admin_path
+    desired = _normalize_panel_path(cfg.admin_path or effective) or effective
+    pending = _normalize_panel_path(cfg.pending_admin_path)
+    deadline = cfg.path_switch_deadline
+    return effective, desired, pending, deadline
+
+
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
@@ -160,10 +195,39 @@ async def startup() -> None:
     asyncio.create_task(dns_auto_reconcile_loop())
 
 
+@app.middleware("http")
+async def runtime_admin_path_alias(request: Request, call_next):
+    raw_path = request.scope.get("path", "")
+    if not raw_path.startswith("/"):
+        return await call_next(request)
+    default_path = f"/{settings.admin_path.strip('/')}"
+    if raw_path.startswith(default_path):
+        return await call_next(request)
+    alias_paths: list[str] = []
+    with Session(engine) as session:
+        effective, _desired, pending, _deadline = _runtime_paths(session)
+        for p in [effective, pending]:
+            norm = _normalize_panel_path(p)
+            if norm and norm != settings.admin_path and norm not in alias_paths:
+                alias_paths.append(norm)
+    for alias in alias_paths:
+        prefix = f"/{alias}"
+        if raw_path == prefix or raw_path.startswith(prefix + "/"):
+            request.scope["path"] = raw_path.replace(prefix, default_path, 1)
+            request.scope["raw_path"] = request.scope["path"].encode("utf-8")
+            break
+    return await call_next(request)
+
+
 def get_system_setting(session: Session) -> SystemSetting:
     cfg = session.exec(select(SystemSetting).where(SystemSetting.id == 1)).first()
     if not cfg:
         cfg = SystemSetting(id=1)
+        session.add(cfg)
+        session.commit()
+        session.refresh(cfg)
+    if not cfg.effective_admin_path:
+        cfg.effective_admin_path = cfg.admin_path or settings.admin_path
         session.add(cfg)
         session.commit()
         session.refresh(cfg)
@@ -389,7 +453,18 @@ async def dns_auto_reconcile_loop() -> None:
 
 @app.get(f"/{settings.admin_path}/healthz")
 def panel_healthz():
-    return {"ok": True, "service": "controller", "admin_path": settings.admin_path}
+    runtime_admin_path = settings.admin_path
+    with Session(engine) as session:
+        effective, desired, pending, deadline = _runtime_paths(session)
+        runtime_admin_path = desired or effective
+    return {
+        "ok": True,
+        "service": "controller",
+        "admin_path": settings.admin_path,
+        "runtime_admin_path": runtime_admin_path,
+        "pending_admin_path": pending,
+        "path_switch_deadline": deadline.isoformat() if deadline else "",
+    }
 
 
 @app.get(f"/{settings.admin_path}", response_class=HTMLResponse)
@@ -415,6 +490,7 @@ def login(data: LoginIn, session: Session = Depends(get_session)):
 @app.get(f"{base}/settings")
 def get_settings(_: Admin = Depends(auth), session: Session = Depends(get_session)):
     cfg = get_system_setting(session)
+    _normalize_runtime_window(session, cfg)
     return cfg
 
 
@@ -422,7 +498,7 @@ def get_settings(_: Admin = Depends(auth), session: Session = Depends(get_sessio
 def set_settings(data: SettingsIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     cfg = get_system_setting(session)
     cfg.controller_port = data.controller_port
-    cfg.admin_path = data.admin_path.strip("/")
+    cfg.admin_path = _normalize_panel_path(data.admin_path)
     cfg.default_admin_user = data.default_admin_user
     cfg.default_admin_password = data.default_admin_password
     cfg.updated_at = datetime.utcnow()
@@ -435,24 +511,63 @@ def set_settings(data: SettingsIn, _: Admin = Depends(auth), session: Session = 
 
     session.add(cfg)
     session.commit()
-    return {"ok": True, "message": "保存成功（账号密码立即生效；端口/路径将由安装脚本更新服务配置并平滑重启）"}
+    return {"ok": True, "message": "保存成功（账号密码立即生效；可点击“应用运行时变更”实现路径窗口切换与服务平滑重载）"}
 
 
 @app.post(f"{base}/settings/apply-runtime")
-def apply_runtime_settings(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+def apply_runtime_settings(data: RuntimeApplyIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     cfg = get_system_setting(session)
+    desired_path = _normalize_panel_path(cfg.admin_path)
+    effective_path = _normalize_panel_path(cfg.effective_admin_path or settings.admin_path)
+    keep_minutes = max(1, min(120, data.keep_old_path_minutes))
+    switch_deadline = datetime.utcnow() + timedelta(minutes=keep_minutes)
+
+    if desired_path != effective_path:
+        cfg.pending_admin_path = effective_path
+        cfg.path_switch_deadline = switch_deadline
+        cfg.effective_admin_path = desired_path
+    else:
+        cfg.pending_admin_path = ""
+        cfg.path_switch_deadline = None
+    cfg.updated_at = datetime.utcnow()
+    session.add(cfg)
+    session.commit()
+
+    service_restart = "skipped"
+    if os.path.exists("/bin/systemctl") or os.path.exists("/usr/bin/systemctl"):
+        try:
+            subprocess.run(["systemctl", "restart", "cfrelay-controller"], check=False)
+            service_restart = "triggered"
+        except Exception as exc:
+            service_restart = f"failed: {exc}"
+
     result = {
         "ok": True,
         "target_port": cfg.controller_port,
-        "target_admin_path": cfg.admin_path,
-        "message": "请重新执行 install_controller.sh 以平滑更新 systemd 配置并立即生效（无需重启服务器）",
+        "effective_admin_path": cfg.effective_admin_path,
+        "pending_admin_path": cfg.pending_admin_path,
+        "path_switch_deadline": cfg.path_switch_deadline.isoformat() if cfg.path_switch_deadline else "",
+        "message": "运行时配置已应用：新路径立即可用；旧路径在窗口期内保留后自动失效。",
+        "service_restart": service_restart,
     }
-    try:
-        subprocess.run(["systemctl", "restart", "cfrelay-controller"], check=False)
-        result["service_restart"] = "triggered"
-    except Exception as exc:
-        result["service_restart"] = f"failed: {exc}"
     return result
+
+
+@app.post(f"{base}/settings/revert-runtime")
+def revert_runtime_settings(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    cfg = get_system_setting(session)
+    _normalize_runtime_window(session, cfg)
+    if not cfg.pending_admin_path:
+        return {"ok": True, "message": "当前没有可回滚的路径窗口", "effective_admin_path": cfg.effective_admin_path}
+
+    cfg.admin_path = cfg.pending_admin_path
+    cfg.effective_admin_path = cfg.pending_admin_path
+    cfg.pending_admin_path = ""
+    cfg.path_switch_deadline = None
+    cfg.updated_at = datetime.utcnow()
+    session.add(cfg)
+    session.commit()
+    return {"ok": True, "message": "已回滚到旧路径", "effective_admin_path": cfg.effective_admin_path}
 
 @app.post(f"{base}/node-tokens")
 def create_node_token(_: Admin = Depends(auth), session: Session = Depends(get_session)):
@@ -713,10 +828,24 @@ def clear_overload_events(_: Admin = Depends(auth), session: Session = Depends(g
 async def add_challenge(data: ChallengeSyncIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     rec = session.exec(select(AcmeChallenge).where(AcmeChallenge.domain == data.domain, AcmeChallenge.token == data.token)).first()
     if not rec:
-        rec = AcmeChallenge(domain=data.domain, token=data.token, content=data.content, status="pending")
+        last = session.exec(
+            select(AcmeChallenge)
+            .where(AcmeChallenge.domain == data.domain)
+            .order_by(desc(AcmeChallenge.id))
+        ).first()
+        rec = AcmeChallenge(
+            domain=data.domain,
+            token=data.token,
+            content=data.content,
+            status="pending",
+            state="pending",
+            version=(last.version + 1) if last else 1,
+        )
     else:
         rec.content = data.content
         rec.status = "pending"
+        rec.state = "pending"
+        rec.cleanup_state = "pending"
         rec.updated_at = datetime.utcnow()
     session.add(rec)
     session.commit()
@@ -848,6 +977,13 @@ async def start_certificate_dns(domain: str, data: CertDnsStartIn, _: Admin = De
     rec.status = "pending"
     rec.updated_at = datetime.utcnow()
 
+    last = session.exec(
+        select(AcmeChallenge)
+        .where(AcmeChallenge.domain == domain, AcmeChallenge.verify_mode == "dns")
+        .order_by(desc(AcmeChallenge.id))
+    ).first()
+    next_version = (last.version + 1) if last else 1
+
     chall = AcmeChallenge(
         domain=domain,
         token=token,
@@ -858,6 +994,8 @@ async def start_certificate_dns(domain: str, data: CertDnsStartIn, _: Admin = De
         zone_id=data.zone_id or "",
         record_name=record_name,
         expires_at=datetime.utcnow() + timedelta(days=7),
+        version=next_version,
+        state="pending",
         cleanup_state="pending",
     )
     session.add(chall)
@@ -902,6 +1040,7 @@ async def verify_certificate_dns(domain: str, data: CertDnsVerifyIn, _: Admin = 
         raise HTTPException(status_code=r.status_code, detail=r.text)
 
     chall.status = "verified"
+    chall.state = "active"
     chall.verified_at = datetime.utcnow()
     chall.cleanup_state = "active"
     chall.updated_at = datetime.utcnow()
@@ -1058,12 +1197,65 @@ async def dispatch_certificate_apply(domain: str, verify_mode: str, session: Ses
             chall = session.exec(select(AcmeChallenge).where(AcmeChallenge.id == rec.challenge_id)).first()
             if chall:
                 chall.status = "done"
+                chall.state = "done"
                 chall.cleanup_state = "done"
                 chall.updated_at = datetime.utcnow()
                 session.add(chall)
         session.commit()
     await push_all_nodes(session)
     return {"results": results}
+
+
+@app.post(f"{base}/acme/challenges/cleanup")
+async def cleanup_challenges(data: ChallengeCleanupIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    keep = max(1, min(5, data.retain_recent))
+    now = datetime.utcnow()
+    challenges = session.exec(select(AcmeChallenge).order_by(desc(AcmeChallenge.id))).all()
+    keep_ids: set[int] = set()
+    for row in challenges:
+        if row.verify_mode != "dns":
+            continue
+        dom_rows = session.exec(
+            select(AcmeChallenge)
+            .where(AcmeChallenge.domain == row.domain, AcmeChallenge.verify_mode == "dns")
+            .order_by(desc(AcmeChallenge.version), desc(AcmeChallenge.id))
+        ).all()
+        for item in dom_rows[:keep]:
+            if item.id is not None:
+                keep_ids.add(item.id)
+
+    cleaned = 0
+    expired = 0
+    for row in challenges:
+        if row.id in keep_ids:
+            continue
+        if row.status == "done" or row.cleanup_state == "done":
+            row.state = "done"
+            row.cleanup_state = "done"
+            row.updated_at = now
+            session.add(row)
+            cleaned += 1
+            continue
+        if row.expires_at and row.expires_at < now:
+            row.status = "expired"
+            row.state = "expired"
+            row.cleanup_state = "expired"
+            row.updated_at = now
+            session.add(row)
+            expired += 1
+
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True, "cleaned": cleaned, "expired": expired, "kept": len(keep_ids)}
+
+
+@app.get(f"{base}/acme/challenges")
+def list_challenges(domain: str = "", _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    query = select(AcmeChallenge)
+    if domain.strip():
+        query = query.where(AcmeChallenge.domain == domain.strip())
+    rows = session.exec(query.order_by(desc(AcmeChallenge.id))).all()
+    return rows
 
 
 @app.post(f"{base}/sync")

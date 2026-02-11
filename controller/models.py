@@ -15,6 +15,9 @@ class SystemSetting(SQLModel, table=True):
     admin_path: str = "yun123"
     default_admin_user: str = "admin"
     default_admin_password: str = "admin123"
+    effective_admin_path: str = "yun123"
+    pending_admin_path: str = ""
+    path_switch_deadline: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -119,6 +122,8 @@ class AcmeChallenge(SQLModel, table=True):
     record_name: str = ""
     verified_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
+    version: int = 1
+    state: str = "pending"  # pending|active|done|expired
     cleanup_state: str = "pending"
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

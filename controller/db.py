@@ -42,7 +42,12 @@ def migrate_schema() -> None:
     _sqlite_add_column_if_missing("acmechallenge", "record_name", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("acmechallenge", "verified_at", "DATETIME")
     _sqlite_add_column_if_missing("acmechallenge", "expires_at", "DATETIME")
+    _sqlite_add_column_if_missing("acmechallenge", "version", "INTEGER DEFAULT 1")
+    _sqlite_add_column_if_missing("acmechallenge", "state", "VARCHAR DEFAULT 'pending'")
     _sqlite_add_column_if_missing("acmechallenge", "cleanup_state", "VARCHAR DEFAULT 'pending'")
+    _sqlite_add_column_if_missing("systemsetting", "effective_admin_path", "VARCHAR DEFAULT 'yun123'")
+    _sqlite_add_column_if_missing("systemsetting", "pending_admin_path", "VARCHAR DEFAULT ''")
+    _sqlite_add_column_if_missing("systemsetting", "path_switch_deadline", "DATETIME")
 
 
 def init_db() -> None:
@@ -60,10 +65,23 @@ def init_db() -> None:
                     id=1,
                     controller_port=settings.port,
                     admin_path=settings.admin_path,
+                    effective_admin_path=settings.admin_path,
+                    pending_admin_path="",
+                    path_switch_deadline=None,
                     default_admin_user=settings.admin_user,
                     default_admin_password=settings.admin_password,
                 )
             )
+        else:
+            updated = False
+            if not sys_cfg.effective_admin_path:
+                sys_cfg.effective_admin_path = sys_cfg.admin_path or settings.admin_path
+                updated = True
+            if sys_cfg.pending_admin_path is None:
+                sys_cfg.pending_admin_path = ""
+                updated = True
+            if updated:
+                session.add(sys_cfg)
         session.commit()
 
 
