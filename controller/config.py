@@ -19,6 +19,7 @@ class Settings(BaseModel):
     hw_recordset_name: str = os.getenv("HUAWEI_DNS_RECORDSET", "")
     cert_dns_v2: bool = os.getenv("CERT_DNS_V2", "1") == "1"
     dns_auto_reconcile: bool = os.getenv("DNS_AUTO_RECONCILE", "1") == "1"
+    ui_v2: bool = os.getenv("UI_V2", "1") == "1"
 
 
 settings = Settings()

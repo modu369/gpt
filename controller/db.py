@@ -2,7 +2,7 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from .config import settings
-from .models import Admin, SystemSetting
+from .models import Admin, SystemSetting, DnsAutoConfig
 from .security import hash_password
 
 
@@ -54,6 +54,8 @@ def migrate_schema() -> None:
     _sqlite_add_column_if_missing("systemsetting", "pending_admin_path", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("systemsetting", "path_switch_deadline", "DATETIME")
     _sqlite_add_column_if_missing("dnsautoconfig", "debounce_sec", "INTEGER DEFAULT 10")
+    _sqlite_add_column_if_missing("overloadevent", "acknowledged", "BOOLEAN DEFAULT 0")
+    _sqlite_add_column_if_missing("overloadevent", "remark", "VARCHAR DEFAULT ''")
 
 
 def init_db() -> None:
@@ -88,6 +90,10 @@ def init_db() -> None:
                 updated = True
             if updated:
                 session.add(sys_cfg)
+
+        dns_cfg = session.exec(select(DnsAutoConfig).where(DnsAutoConfig.id == 1)).first()
+        if not dns_cfg:
+            session.add(DnsAutoConfig(id=1))
         session.commit()
 
 

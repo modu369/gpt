@@ -33,7 +33,7 @@
       <div class="title">CF Relay 管理后台</div>
       <div class="row">
         <button class="secondary" onclick="openPage('home')">首页</button>
-        <button class="secondary" onclick="openPage('cert')">证书中心</button><button class="secondary" onclick="openPage('overload')">超载中心</button>
+        <button class="secondary" onclick="openPage('cert')">证书中心</button><button class="secondary" onclick="openPage('overload')">超载中心</button><button class="secondary" onclick="openPage('audit')">审计日志</button>
         <button class="secondary" onclick="openPage('settings')">设置</button>
         <button class="secondary" onclick="logout()">退出登录</button>
       </div>
@@ -41,6 +41,9 @@
 
     <div id="page-home" class="page active">
       <div class="grid">
+        <div id="overloadBanner" class="card col-12" style="display:none;border-color:#f59e0b;background:#fffbeb">
+          <div class="row" style="justify-content:space-between"><div><strong>告警：</strong><span id="overloadBannerText"></span></div><button class="secondary" onclick="dismissOverloadBanner()">X 关闭本次提示</button></div>
+        </div>
         <div class="card col-4 monitor"><h3>CPU 总体监控</h3><div id="cpuCircle" class="circle"></div><div id="cpuText" class="muted"></div></div>
         <div class="card col-4 monitor"><h3>内存总体监控</h3><div id="memCircle" class="circle"></div><div id="memText" class="muted"></div></div>
         <div class="card col-4 monitor"><h3>带宽总体监控</h3><div id="bwCircle" class="circle"></div><div id="bwText" class="muted"></div></div>
@@ -56,6 +59,7 @@
           <h3>节点列表</h3>
           <table><thead><tr><th>名称</th><th>地址</th><th>在线</th><th>CPU%</th><th>内存MB</th><th>带宽Mbps</th><th>最大带宽测速</th><th>流量限制</th><th>安装/卸载</th></tr></thead><tbody id="nodesT"></tbody></table>
         </div>
+        <div class="card col-12"><h3>节点卡片（可展开）</h3><div id="nodeCards"></div></div>
       </div>
     </div>
 
@@ -85,8 +89,18 @@
 
     <div id="page-overload" class="page">
       <div class="card">
-        <div class="row" style="justify-content:space-between"><h3>超载事件中心</h3><button class="secondary" onclick="clearOverloadEvents()">清空事件</button></div>
-        <table style="margin-top:8px"><thead><tr><th>节点</th><th>原因</th><th>当前值</th><th>阈值</th><th>次数</th><th>时间</th></tr></thead><tbody id="overloadT"></tbody></table>
+        <div class="row" style="justify-content:space-between"><h3>超载事件中心</h3><div class="row"><button class="secondary" onclick="exportOverloadEvents()">导出CSV</button><button class="secondary" onclick="clearOverloadEvents()">清空事件</button></div></div>
+        <div class="row"><input id="ovNode" placeholder="节点名" style="width:140px"><input id="ovReason" placeholder="原因(cpu/memory...)" style="width:180px"><select id="ovAck"><option value="">全部</option><option value="false">未确认</option><option value="true">已确认</option></select><input id="ovPageSize" placeholder="每页" style="width:90px" value="20"><button class="secondary" onclick="refreshOverloadEvents(1)">筛选</button></div>
+        <table style="margin-top:8px"><thead><tr><th>节点</th><th>原因</th><th>当前值</th><th>阈值</th><th>次数</th><th>时间</th><th>确认</th><th>备注</th><th>操作</th></tr></thead><tbody id="overloadT"></tbody></table>
+        <div class="row" style="margin-top:8px"><button class="secondary" onclick="prevOverloadPage()">上一页</button><span id="overloadPager" class="muted"></span><button class="secondary" onclick="nextOverloadPage()">下一页</button></div>
+      </div>
+    </div>
+
+    <div id="page-audit" class="page">
+      <div class="card">
+        <div class="row" style="justify-content:space-between"><h3>审计日志</h3><div class="row"><input id="auditCategory" placeholder="分类(settings/node/overload)" style="width:220px"><button class="secondary" onclick="refreshAuditLogs(1)">筛选</button></div></div>
+        <table style="margin-top:8px"><thead><tr><th>时间</th><th>分类</th><th>动作</th><th>执行人</th><th>目标</th><th>详情</th></tr></thead><tbody id="auditT"></tbody></table>
+        <div class="row" style="margin-top:8px"><button class="secondary" onclick="prevAuditPage()">上一页</button><span id="auditPager" class="muted"></span><button class="secondary" onclick="nextAuditPage()">下一页</button></div>
       </div>
     </div>
   </div>
@@ -111,6 +125,8 @@
 let token = localStorage.getItem('cf_token') || '';
 const panelPath = '/' + (location.pathname.split('/').filter(Boolean)[0] || 'yun123');
 const base = `${panelPath}/api`;
+let overloadPage=1,overloadTotal=0,overloadPageSize=20,overloadCache=[];
+let auditPage=1,auditTotal=0,auditPageSize=20;
 function hdr(){return {'Content-Type':'application/json','Authorization':`Bearer ${token}`};}
 async function api(path,opt={}){const r=await fetch(base+path,opt); if(!r.ok) throw new Error(await r.text()); return r.json();}
 function openPage(name){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(`page-${name}`).classList.add('active');}
@@ -127,9 +143,14 @@ async function refreshAll(){
   const memP=o.totals?.memory_mb?((o.totals.memory_used_mb/o.totals.memory_mb)*100):0;
   const bwP=o.totals?.bandwidth_mbps?((o.totals.bandwidth_used_mbps/o.totals.bandwidth_mbps)*100):0;
   drawCircle('cpuCircle',cpuP); drawCircle('memCircle',memP); drawCircle('bwCircle',bwP);
+  const bannerKey='cf_overload_banner_dismissed';
+  const shouldShow=(o.overloaded_nodes||[]).length>0 && localStorage.getItem(bannerKey)!=='1';
+  overloadBanner.style.display=shouldShow?'block':'none';
+  overloadBannerText.textContent=shouldShow?`当前有 ${o.overloaded_nodes.length} 个节点超载，建议扩容或调整权重。`:'';
   cpuText.textContent=`已用 ${o.totals?.cpu_used_cores_est||0}/${o.totals?.cpu_cores||0} 核`; memText.textContent=`已用 ${o.totals?.memory_used_mb||0}/${o.totals?.memory_mb||0} MB`; bwText.textContent=`已用 ${o.totals?.bandwidth_used_mbps||0}/${o.totals?.bandwidth_mbps||0} Mbps`;
   const nodes=await api('/nodes',{headers:hdr()});
   nodesT.innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}<br><span class="muted">流量${(n.traffic_rx_gb||0).toFixed?Number(n.traffic_rx_gb).toFixed(2):n.traffic_rx_gb}/${(n.traffic_tx_gb||0).toFixed?Number(n.traffic_tx_gb).toFixed(2):n.traffic_tx_gb}GB</span></td><td><button onclick="speedtestNode('${n.name}')">重测</button></td><td><button class="secondary" onclick="setTrafficLimitPrompt('${n.name}')">设置</button></td><td><button onclick="showNodeCmds('${n.name}')">安装/卸载</button></td></tr>`).join('');
+  nodeCards.innerHTML=nodes.map((n,i)=>`<details style="margin-bottom:8px"><summary>${n.name} (${n.online?'online':'offline'}) CPU:${n.used_cpu_percent||0}% MEM:${n.used_memory_mb||0}/${n.memory_mb||0} BW:${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</summary><div class="row" style="margin-top:8px"><button onclick="speedtestNode('${n.name}')">测速</button><button class="secondary" onclick="setTrafficLimitPrompt('${n.name}')">限流</button><button class="secondary" onclick="showNodeCmds('${n.name}')">安装/卸载</button></div></details>`).join('')||'<span class="muted">暂无节点</span>';
   const domains=await api('/whitelist',{headers:hdr()}); document.getElementById('domains').innerHTML=domains.map(x=>`<div class="row"><span>${x.domain}</span><button class="secondary" onclick="deleteDomainByEncoded('${encodeURIComponent(x.domain)}')">删除</button></div>`).join('')||'<span class="muted">(空)</span>';
   const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').innerHTML=cf.map(x=>`<div class="row"><span>${x.ip}:80,443 [${x.healthy?'healthy':'down'} score:${x.health_score??'-'} ${x.last_probe_detail||''}]</span><button class="secondary" onclick="deleteCfIpByEncoded('${encodeURIComponent(x.ip)}')">删除</button></div>`).join('')||'<span class="muted">(空)</span>';
   const certs=await api('/certificates',{headers:hdr()}); certT.innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}${c.dns_phase&&c.dns_phase!=="none"?` (dns:${c.dns_phase})`:""}</td><td><button onclick="retryCert('${encodeURIComponent(c.domain)}')">重试</button><button class="secondary" onclick="verifyCertByEncoded('${encodeURIComponent(c.domain)}')">手动重试本次验证</button><button class="secondary" onclick="showCertLogsByEncoded('${encodeURIComponent(c.domain)}')">日志</button><button class="secondary" onclick="deleteCertByEncoded('${encodeURIComponent(c.domain)}')">删除</button></td></tr>`).join('');
@@ -137,8 +158,10 @@ async function refreshAll(){
   const timeline=await api(`/acme/challenges${cdomain?`?domain=${encodeURIComponent(cdomain)}`:''}`,{headers:hdr()});
   challengeTimeline.innerHTML=(timeline||[]).slice(0,12).map(c=>`<div>v${c.version||1} #${c.id} ${c.domain} | state=${c.state||'pending'} | cleanup=${c.cleanup_state||'pending'} | status=${c.status||''} | updated=${c.updated_at||''}</div>`).join('')||'暂无 challenge 记录';
   const s=await api('/settings',{headers:hdr()}); setPort.value=s.controller_port; setPath.value=s.admin_path; setUser.value=s.default_admin_user; setPwd.value=s.default_admin_password; const dac=await api('/dns/auto-config',{headers:hdr()}); dnsAutoEnabled.checked=!!dac.enabled; dnsAutoInterval.value=dac.interval_sec||30; dnsAutoThreshold.value=dac.change_threshold||5; dnsAutoDebounce.value=dac.debounce_sec||10;
+  if(s.ui_v2===false){document.getElementById('page-overload').style.display='none'; const ap=document.getElementById('page-audit'); if(ap)ap.style.display='none';}
   runtimeInfo.textContent=`当前生效路径: ${s.effective_admin_path||s.admin_path||''}；待失效旧路径: ${s.pending_admin_path||'-'}；窗口截止: ${s.path_switch_deadline||'-'}`;
-  const events=await api('/overload-events',{headers:hdr()}); overloadT.innerHTML=events.map(e=>`<tr><td>${e.node_name}</td><td>${e.reason}</td><td>${e.value}</td><td>${e.threshold}</td><td>${e.count}</td><td>${e.occurred_at}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">暂无</td></tr>';
+  await refreshOverloadEvents(overloadPage);
+  await refreshAuditLogs(auditPage);
 }
 async function createNodeCmd(){const name=(document.getElementById('nodeName').value||'').trim();const msg=document.getElementById('nodeCmdMsg');if(!name){msg.textContent='请先输入节点名称';return;}msg.textContent='生成中...';try{const r=await api('/nodes/onboard',{method:'POST',headers:hdr(),body:JSON.stringify({node_name:name})});document.getElementById('installCmd').value=r.install_command||'';document.getElementById('uninstallCmd').value=r.uninstall_command||'';msg.textContent='生成成功';}catch(e){if(String(e.message||'').includes('Not Found')){try{const t=await api('/node-tokens',{method:'POST',headers:hdr()});const controllerUrl=window.location.origin;const adminPath=panelPath.replace(/^\//,'');document.getElementById('installCmd').value=`bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh -o /tmp/install_agent.sh && chmod +x /tmp/install_agent.sh && /tmp/install_agent.sh --controller ${controllerUrl} --admin-path ${adminPath} --token ${t.token} --node-name ${name}"`;document.getElementById('uninstallCmd').value='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';msg.textContent='生成成功（兼容模式）';return;}catch(e2){msg.textContent='生成失败: '+e2.message;return;}}msg.textContent='生成失败: '+e.message;}}
 async function speedtestNode(name){const r=await api(`/nodes/${name}/speedtest`,{method:'POST',headers:hdr()});alert(`下行:${r.download_mbps} 上行:${r.upload_mbps} 生效最大:${r.effective_mbps}`);refreshAll();}
@@ -174,6 +197,51 @@ async function setTrafficLimitPrompt(nodeName){
   await api(`/nodes/${encodeURIComponent(nodeName)}/traffic-config`,{method:'POST',headers:hdr(),body:JSON.stringify({enabled:enabled,monthly_limit_gb:monthly,count_mode:mode,low_threshold_percent:threshold})});
   alert('保存成功');
 }
+
+function dismissOverloadBanner(){localStorage.setItem('cf_overload_banner_dismissed','1');overloadBanner.style.display='none';}
+function showOverloadBannerAgain(){localStorage.removeItem('cf_overload_banner_dismissed');}
+
+async function refreshOverloadEvents(page=1){
+  overloadPage=Math.max(1,page);
+  overloadPageSize=Math.max(1,Number(ovPageSize.value||20));
+  const q=`?page=${overloadPage}&page_size=${overloadPageSize}&node_name=${encodeURIComponent(ovNode.value||'')}&reason=${encodeURIComponent(ovReason.value||'')}&acknowledged=${encodeURIComponent(ovAck.value||'')}`;
+  const r=await api('/overload-events'+q,{headers:hdr()});
+  overloadTotal=r.total||0; overloadCache=r.items||[];
+  overloadT.innerHTML=overloadCache.map(e=>`<tr><td>${e.node_name}</td><td>${e.reason}</td><td>${e.value}</td><td>${e.threshold}</td><td>${e.count}</td><td>${e.occurred_at}</td><td>${e.acknowledged?'是':'否'}</td><td>${e.remark||''}</td><td><button class="secondary" onclick="ackOverloadEvent(${e.id})">确认/备注</button></td></tr>`).join('')||'<tr><td colspan="9" class="muted">暂无</td></tr>';
+  const pages=Math.max(1,Math.ceil(overloadTotal/overloadPageSize));
+  overloadPager.textContent=`第 ${overloadPage}/${pages} 页，共 ${overloadTotal} 条`;
+}
+
+async function ackOverloadEvent(id){
+  const ack=confirm('标记为已确认？取消则标记未确认');
+  const remark=prompt('备注信息(可空)','')||'';
+  await api(`/overload-events/${id}/ack`,{method:'POST',headers:hdr(),body:JSON.stringify({acknowledged:ack,remark})});
+  await refreshOverloadEvents(overloadPage);
+}
+
+function prevOverloadPage(){if(overloadPage>1)refreshOverloadEvents(overloadPage-1);}
+function nextOverloadPage(){const pages=Math.max(1,Math.ceil(overloadTotal/overloadPageSize));if(overloadPage<pages)refreshOverloadEvents(overloadPage+1);}
+
+function exportOverloadEvents(){
+  const rows=[['node','reason','value','threshold','count','occurred_at','acknowledged','remark']].concat(overloadCache.map(e=>[e.node_name,e.reason,e.value,e.threshold,e.count,e.occurred_at,e.acknowledged,e.remark||'']));
+  const csv=rows.map(r=>r.map(x=>`"${String(x??'').replaceAll('"','""')}"`).join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='overload-events.csv';a.click();URL.revokeObjectURL(a.href);
+}
+
+async function refreshAuditLogs(page=1){
+  auditPage=Math.max(1,page);
+  const q=`?page=${auditPage}&page_size=${auditPageSize}&category=${encodeURIComponent(auditCategory.value||'')}`;
+  const r=await api('/audit/logs'+q,{headers:hdr()});
+  auditTotal=r.total||0;
+  const items=r.items||[];
+  auditT.innerHTML=items.map(x=>`<tr><td>${x.created_at}</td><td>${x.category}</td><td>${x.action}</td><td>${x.actor}</td><td>${x.target||''}</td><td>${x.detail||''}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">暂无</td></tr>';
+  const pages=Math.max(1,Math.ceil(auditTotal/auditPageSize));
+  auditPager.textContent=`第 ${auditPage}/${pages} 页，共 ${auditTotal} 条`;
+}
+
+function prevAuditPage(){if(auditPage>1)refreshAuditLogs(auditPage-1);}
+function nextAuditPage(){const pages=Math.max(1,Math.ceil(auditTotal/auditPageSize));if(auditPage<pages)refreshAuditLogs(auditPage+1);}
 
 async function clearOverloadEvents(){await api('/overload-events',{method:'DELETE',headers:hdr()});refreshAll();}
 

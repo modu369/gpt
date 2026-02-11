@@ -17,6 +17,7 @@ from .config import settings
 from .db import engine, get_session, init_db
 from .models import (
     Admin,
+    AuditLog,
     CertificateRecord,
     CfIp,
     DnsScheduleConfig,
@@ -146,6 +147,11 @@ class ChallengeCleanupIn(BaseModel):
     retain_recent: int = 1
 
 
+class OverloadEventUpdateIn(BaseModel):
+    acknowledged: bool = True
+    remark: str = ""
+
+
 def auth(authorization: str = Header(default=""), session: Session = Depends(get_session)) -> Admin:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -189,6 +195,10 @@ def _runtime_paths(session: Session) -> tuple[str, str, str, datetime | None]:
     pending = _normalize_panel_path(cfg.pending_admin_path)
     deadline = cfg.path_switch_deadline
     return effective, desired, pending, deadline
+
+
+def add_audit_log(session: Session, category: str, action: str, actor: str = "system", target: str = "", detail: str = "") -> None:
+    session.add(AuditLog(category=category, action=action, actor=actor, target=target, detail=detail))
 
 
 @app.on_event("startup")
@@ -525,7 +535,9 @@ def login(data: LoginIn, session: Session = Depends(get_session)):
 def get_settings(_: Admin = Depends(auth), session: Session = Depends(get_session)):
     cfg = get_system_setting(session)
     _normalize_runtime_window(session, cfg)
-    return cfg
+    data = cfg.model_dump()
+    data["ui_v2"] = settings.ui_v2
+    return data
 
 
 @app.post(f"{base}/settings")
@@ -544,6 +556,7 @@ def set_settings(data: SettingsIn, _: Admin = Depends(auth), session: Session = 
         session.add(admin)
 
     session.add(cfg)
+    add_audit_log(session, "settings", "update", actor=data.default_admin_user, target="system", detail=f"port={cfg.controller_port},path={cfg.admin_path}")
     session.commit()
     return {"ok": True, "message": "保存成功（账号密码立即生效；可点击“应用运行时变更”实现路径窗口切换与服务平滑重载）"}
 
@@ -843,13 +856,46 @@ def set_node_traffic_config(node_name: str, data: NodeTrafficIn, _: Admin = Depe
     node.traffic_count_mode = data.count_mode
     node.traffic_low_threshold_percent = data.low_threshold_percent
     session.add(node)
+    add_audit_log(session, "node", "traffic_config", actor="admin", target=node_name, detail=f"enabled={data.enabled},limit={data.monthly_limit_gb},mode={data.count_mode}")
     session.commit()
     return {"ok": True}
 
 
 @app.get(f"{base}/overload-events")
-def list_overload_events(_: Admin = Depends(auth), session: Session = Depends(get_session)):
-    return session.exec(select(OverloadEvent).order_by(OverloadEvent.occurred_at.desc())).all()
+def list_overload_events(
+    reason: str = "",
+    node_name: str = "",
+    acknowledged: str = "",
+    page: int = 1,
+    page_size: int = 20,
+    _: Admin = Depends(auth),
+    session: Session = Depends(get_session),
+):
+    query = select(OverloadEvent)
+    if reason.strip():
+        query = query.where(OverloadEvent.reason == reason.strip())
+    if node_name.strip():
+        query = query.where(OverloadEvent.node_name == node_name.strip())
+    if acknowledged in {"true", "false"}:
+        query = query.where(OverloadEvent.acknowledged == (acknowledged == "true"))
+    rows = session.exec(query.order_by(OverloadEvent.occurred_at.desc())).all()
+    p = max(1, page)
+    ps = min(200, max(1, page_size))
+    start = (p - 1) * ps
+    return {"total": len(rows), "items": rows[start : start + ps], "page": p, "page_size": ps}
+
+
+@app.post(f"{base}/overload-events/{{event_id}}/ack")
+def ack_overload_event(event_id: int, data: OverloadEventUpdateIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    row = session.exec(select(OverloadEvent).where(OverloadEvent.id == event_id)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="event not found")
+    row.acknowledged = bool(data.acknowledged)
+    row.remark = data.remark or ""
+    session.add(row)
+    add_audit_log(session, "overload", "ack", actor="admin", target=str(event_id), detail=f"ack={row.acknowledged},remark={row.remark}")
+    session.commit()
+    return {"ok": True}
 
 
 @app.delete(f"{base}/overload-events")
@@ -857,8 +903,21 @@ def clear_overload_events(_: Admin = Depends(auth), session: Session = Depends(g
     rows = session.exec(select(OverloadEvent)).all()
     for r in rows:
         session.delete(r)
+    add_audit_log(session, "overload", "clear", actor="admin", target="all", detail=f"count={len(rows)}")
     session.commit()
     return {"ok": True, "count": len(rows)}
+
+
+@app.get(f"{base}/audit/logs")
+def list_audit_logs(category: str = "", page: int = 1, page_size: int = 30, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    query = select(AuditLog)
+    if category.strip():
+        query = query.where(AuditLog.category == category.strip())
+    rows = session.exec(query.order_by(AuditLog.created_at.desc())).all()
+    p = max(1, page)
+    ps = min(200, max(1, page_size))
+    start = (p - 1) * ps
+    return {"total": len(rows), "items": rows[start : start + ps], "page": p, "page_size": ps}
 
 
 @app.post(f"{base}/acme/challenges")

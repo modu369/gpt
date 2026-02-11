@@ -16,6 +16,11 @@
   - CF IP 健康探测升级为三层探测（ICMP + TCP:443 + TCP:80），输出健康分数
   - DNS 自动调度新增防抖阈值（debounce）避免高频震荡
   - 提供 `scripts/benchmark_relay.sh` 基线压测脚本（direct vs relay）
+- P3 可视化与运维增强
+  - 超载中心支持筛选、分页、确认/备注、CSV 导出
+  - 首页新增可关闭的超载横幅提示（会话记忆）
+  - 节点卡片支持折叠展开并内置单节点操作按钮
+  - 新增审计日志接口与页面：记录设置变更、流量策略变更、超载确认/清理
 
 ## 架构
 
@@ -96,6 +101,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-
 
 - `DNS_AUTO_RECONCILE=1`
 - `CERT_DNS_V2=1`
+- `UI_V2=1`（控制 P3 页面增强开关）
 
 被控（连接池）：
 

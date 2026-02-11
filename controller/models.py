@@ -141,4 +141,16 @@ class OverloadEvent(SQLModel, table=True):
     value: float = 0
     threshold: float = 0
     count: int = 1
+    acknowledged: bool = False
+    remark: str = ""
     occurred_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AuditLog(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    category: str = Field(index=True)
+    action: str
+    actor: str = "system"
+    target: str = ""
+    detail: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
