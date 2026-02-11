@@ -27,6 +27,11 @@ def migrate_schema() -> None:
     _sqlite_add_column_if_missing("node", "traffic_suspended_month", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("cfip", "healthy", "BOOLEAN DEFAULT 1")
     _sqlite_add_column_if_missing("cfip", "fail_count", "INTEGER DEFAULT 0")
+    _sqlite_add_column_if_missing("cfip", "health_score", "INTEGER DEFAULT 100")
+    _sqlite_add_column_if_missing("cfip", "icmp_ok", "BOOLEAN DEFAULT 1")
+    _sqlite_add_column_if_missing("cfip", "tcp_ok", "BOOLEAN DEFAULT 1")
+    _sqlite_add_column_if_missing("cfip", "http_ok", "BOOLEAN DEFAULT 1")
+    _sqlite_add_column_if_missing("cfip", "last_probe_detail", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("cfip", "last_checked_at", "DATETIME")
     _sqlite_add_column_if_missing("certificaterecord", "fail_reason", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("certificaterecord", "retries", "INTEGER DEFAULT 0")
@@ -48,6 +53,7 @@ def migrate_schema() -> None:
     _sqlite_add_column_if_missing("systemsetting", "effective_admin_path", "VARCHAR DEFAULT 'yun123'")
     _sqlite_add_column_if_missing("systemsetting", "pending_admin_path", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("systemsetting", "path_switch_deadline", "DATETIME")
+    _sqlite_add_column_if_missing("dnsautoconfig", "debounce_sec", "INTEGER DEFAULT 10")
 
 
 def init_db() -> None:

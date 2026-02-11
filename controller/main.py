@@ -1,6 +1,7 @@
 from datetime import datetime, time, timedelta
 import asyncio
 import os
+import socket
 import subprocess
 from pathlib import Path
 import secrets
@@ -123,6 +124,7 @@ class DnsAutoConfigIn(BaseModel):
     enabled: bool = False
     interval_sec: int = 30
     change_threshold: int = 5
+    debounce_sec: int = 10
 
 
 class CertDnsStartIn(BaseModel):
@@ -160,6 +162,7 @@ def auth(authorization: str = Header(default=""), session: Session = Depends(get
 
 _last_dns_signature = ""
 _last_dns_weights: dict[str, int] = {}
+_last_dns_reconcile_at: float = 0.0
 
 
 def _normalize_panel_path(v: str) -> str:
@@ -297,12 +300,7 @@ async def cf_ip_health_loop() -> None:
                 changed = False
                 ips = session.exec(select(CfIp)).all()
                 for x in ips:
-                    ok = subprocess.run(
-                        ["ping", "-c", "1", "-W", "1", x.ip],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    ).returncode == 0
+                    ok, icmp_ok, tcp_ok, http_ok, score, detail = _probe_cf_ip(x.ip)
                     prev = x.healthy
                     if ok:
                         x.healthy = True
@@ -311,6 +309,11 @@ async def cf_ip_health_loop() -> None:
                         x.fail_count = (x.fail_count or 0) + 1
                         if x.fail_count >= 2:
                             x.healthy = False
+                    x.health_score = score
+                    x.icmp_ok = icmp_ok
+                    x.tcp_ok = tcp_ok
+                    x.http_ok = http_ok
+                    x.last_probe_detail = detail
                     x.last_checked_at = datetime.utcnow()
                     if prev != x.healthy:
                         changed = True
@@ -321,6 +324,34 @@ async def cf_ip_health_loop() -> None:
         except Exception:
             pass
         await asyncio.sleep(5)
+
+
+def _probe_cf_ip(ip: str) -> tuple[bool, bool, bool, bool, int, str]:
+    icmp_ok = subprocess.run(
+        ["ping", "-c", "1", "-W", "1", ip],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+    tcp_ok = False
+    try:
+        with socket.create_connection((ip, 443), timeout=1.0):
+            tcp_ok = True
+    except Exception:
+        tcp_ok = False
+
+    http_ok = False
+    try:
+        with socket.create_connection((ip, 80), timeout=1.5):
+            http_ok = True
+    except Exception:
+        http_ok = False
+
+    score = (40 if icmp_ok else 0) + (40 if tcp_ok else 0) + (20 if http_ok else 0)
+    detail = f"icmp={'ok' if icmp_ok else 'fail'},tcp={'ok' if tcp_ok else 'fail'},http={'ok' if http_ok else 'fail'}"
+    healthy = score >= 60
+    return healthy, icmp_ok, tcp_ok, http_ok, score, detail
 
 
 def record_overload_event(session: Session, node: Node, reason: str, value: float, threshold: float) -> None:
@@ -432,7 +463,7 @@ async def _doh_txt(name: str) -> list[str]:
 
 
 async def dns_auto_reconcile_loop() -> None:
-    global _last_dns_signature, _last_dns_weights
+    global _last_dns_signature, _last_dns_weights, _last_dns_reconcile_at
     while True:
         try:
             with Session(engine) as session:
@@ -441,10 +472,13 @@ async def dns_auto_reconcile_loop() -> None:
                     candidates = _candidate_node_weights(session)
                     sig = _candidate_signature(candidates)
                     delta = _weight_delta(_last_dns_weights, candidates)
-                    if sig != _last_dns_signature and delta >= cfg.change_threshold:
+                    now = time.time()
+                    debounce = max(1, cfg.debounce_sec)
+                    if sig != _last_dns_signature and delta >= cfg.change_threshold and (now - _last_dns_reconcile_at) >= debounce:
                         reconcile_dns_impl(session)
                         _last_dns_signature = sig
                         _last_dns_weights = {x.ip: x.weight for x in candidates}
+                        _last_dns_reconcile_at = now
                     await asyncio.sleep(max(5, cfg.interval_sec))
                     continue
         except Exception:
@@ -746,15 +780,18 @@ def report_metrics(node_name: str, data: NodeMetricIn, x_agent_secret: str = Hea
 
     auto_cfg = get_dns_auto_config(session)
     if settings.dns_auto_reconcile and auto_cfg.enabled:
-        global _last_dns_signature, _last_dns_weights
+        global _last_dns_signature, _last_dns_weights, _last_dns_reconcile_at
         candidates = _candidate_node_weights(session)
         sig = _candidate_signature(candidates)
         delta = _weight_delta(_last_dns_weights, candidates)
-        if sig != _last_dns_signature and delta >= auto_cfg.change_threshold:
+        now = time.time()
+        debounce = max(1, auto_cfg.debounce_sec)
+        if sig != _last_dns_signature and delta >= auto_cfg.change_threshold and (now - _last_dns_reconcile_at) >= debounce:
             try:
                 reconcile_dns_impl(session)
                 _last_dns_signature = sig
                 _last_dns_weights = {x.ip: x.weight for x in candidates}
+                _last_dns_reconcile_at = now
             except Exception:
                 pass
     return {"ok": True}
@@ -909,8 +946,23 @@ async def delete_cf_ip(ip: str, _: Admin = Depends(auth), session: Session = Dep
 
 @app.get(f"{base}/cf-ips")
 def list_cf_ips(_: Admin = Depends(auth), session: Session = Depends(get_session)):
-    rows = session.exec(select(CfIp).where(CfIp.enabled == True, CfIp.healthy == True)).all()  # noqa: E712
-    return [{"ip": x.ip, "ports": [80, 443], "enabled": x.enabled, "healthy": x.healthy, "fail_count": x.fail_count, "last_checked_at": x.last_checked_at} for x in rows]
+    rows = session.exec(select(CfIp).where(CfIp.enabled == True)).all()  # noqa: E712
+    return [
+        {
+            "ip": x.ip,
+            "ports": [80, 443],
+            "enabled": x.enabled,
+            "healthy": x.healthy,
+            "fail_count": x.fail_count,
+            "health_score": x.health_score,
+            "icmp_ok": x.icmp_ok,
+            "tcp_ok": x.tcp_ok,
+            "http_ok": x.http_ok,
+            "last_probe_detail": x.last_probe_detail,
+            "last_checked_at": x.last_checked_at,
+        }
+        for x in rows
+    ]
 
 
 @app.post(f"{base}/dns/config")
@@ -952,6 +1004,7 @@ def set_dns_auto_config(data: DnsAutoConfigIn, _: Admin = Depends(auth), session
     cfg.enabled = data.enabled
     cfg.interval_sec = max(5, data.interval_sec)
     cfg.change_threshold = max(1, data.change_threshold)
+    cfg.debounce_sec = max(1, data.debounce_sec)
     cfg.updated_at = datetime.utcnow()
     session.add(cfg)
     session.commit()

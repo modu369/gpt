@@ -62,6 +62,10 @@ Environment=AGENT_SHARED_SECRET=$SHARED_SECRET
 Environment=AGENT_PORT=18080
 Environment=CONTROLLER_API_BASE=$CONTROLLER/$ADMIN_PATH/api
 Environment=NODE_NAME=$NODE_NAME
+Environment=UPSTREAM_TIMEOUT_S=15
+Environment=POOL_MAX_CONNECTIONS=200
+Environment=POOL_MAX_KEEPALIVE_CONNECTIONS=80
+Environment=POOL_KEEPALIVE_EXPIRY_S=30
 ExecStart=$VENV_DIR/bin/uvicorn agent.main:app --host 0.0.0.0 --port 18080
 Restart=always
 RestartSec=2

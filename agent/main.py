@@ -39,13 +39,36 @@ class CertPrecheckIn(BaseModel):
 
 
 _CERT_TASKS: dict[str, asyncio.Task] = {}
+_UPSTREAM_CLIENT: httpx.AsyncClient | None = None
+
+
+def _http_limits() -> httpx.Limits:
+    return httpx.Limits(
+        max_connections=max(20, settings.pool_max_connections),
+        max_keepalive_connections=max(10, settings.pool_max_keepalive_connections),
+        keepalive_expiry=max(5.0, settings.pool_keepalive_expiry_s),
+    )
 
 
 @app.on_event("startup")
 async def startup() -> None:
     Path(settings.state_dir).mkdir(parents=True, exist_ok=True)
     Path(WWWROOT).mkdir(parents=True, exist_ok=True)
+    global _UPSTREAM_CLIENT
+    _UPSTREAM_CLIENT = httpx.AsyncClient(
+        timeout=max(3.0, settings.upstream_timeout_s),
+        follow_redirects=False,
+        limits=_http_limits(),
+    )
     asyncio.create_task(report_metrics_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global _UPSTREAM_CLIENT
+    if _UPSTREAM_CLIENT is not None:
+        await _UPSTREAM_CLIENT.aclose()
+        _UPSTREAM_CLIENT = None
 
 
 @app.get("/healthz")
@@ -165,8 +188,16 @@ async def gate_http(path: str, request: Request):
     headers["host"] = host
     headers.pop("content-length", None)
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
-        upstream = await client.request(request.method, target_url, headers=headers, content=body)
+    global _UPSTREAM_CLIENT
+    client = _UPSTREAM_CLIENT
+    if client is None:
+        client = httpx.AsyncClient(
+            timeout=max(3.0, settings.upstream_timeout_s),
+            follow_redirects=False,
+            limits=_http_limits(),
+        )
+        _UPSTREAM_CLIENT = client
+    upstream = await client.request(request.method, target_url, headers=headers, content=body)
 
     excluded = {"content-encoding", "transfer-encoding", "connection"}
     rsp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}

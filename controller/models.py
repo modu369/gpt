@@ -73,6 +73,11 @@ class CfIp(SQLModel, table=True):
     enabled: bool = True
     healthy: bool = True
     fail_count: int = 0
+    health_score: int = 100
+    icmp_ok: bool = True
+    tcp_ok: bool = True
+    http_ok: bool = True
+    last_probe_detail: str = ""
     last_checked_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -90,6 +95,7 @@ class DnsAutoConfig(SQLModel, table=True):
     enabled: bool = False
     interval_sec: int = 30
     change_threshold: int = 5
+    debounce_sec: int = 10
     last_run_at: datetime = Field(default_factory=datetime.utcnow)
     last_message: str = ""
     updated_at: datetime = Field(default_factory=datetime.utcnow)
