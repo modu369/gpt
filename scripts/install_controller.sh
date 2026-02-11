@@ -56,7 +56,8 @@ if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewa
 fi
 
 systemctl daemon-reload
-systemctl enable --now cfrelay-controller
+systemctl enable cfrelay-controller >/dev/null 2>&1 || true
+systemctl restart cfrelay-controller
 
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:${CONTROLLER_PORT}/${ADMIN_PATH}/healthz" >/dev/null 2>&1; then

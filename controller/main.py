@@ -422,11 +422,33 @@ def list_domains(_: Admin = Depends(auth), session: Session = Depends(get_sessio
     return session.exec(select(WhitelistDomain)).all()
 
 
+@app.delete(f"{base}/whitelist/{{domain}}")
+async def delete_domain(domain: str, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rec = session.exec(select(WhitelistDomain).where(WhitelistDomain.domain == domain)).first()
+    if not rec:
+        return {"ok": True, "exists": False}
+    session.delete(rec)
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True}
+
+
 @app.post(f"{base}/cf-ips")
 async def add_cf_ip(data: CfIpIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
     if session.exec(select(CfIp).where(CfIp.ip == data.ip)).first():
         return {"ok": True, "exists": True}
     session.add(CfIp(ip=data.ip, port=443))
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True}
+
+
+@app.delete(f"{base}/cf-ips/{{ip}}")
+async def delete_cf_ip(ip: str, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rec = session.exec(select(CfIp).where(CfIp.ip == ip)).first()
+    if not rec:
+        return {"ok": True, "exists": False}
+    session.delete(rec)
     session.commit()
     await push_all_nodes(session)
     return {"ok": True}
@@ -512,6 +534,45 @@ async def add_certificate_manual(data: CertRequestIn, _: Admin = Depends(auth), 
 @app.get(f"{base}/certificates")
 def list_certificates(_: Admin = Depends(auth), session: Session = Depends(get_session)):
     return session.exec(select(CertificateRecord)).all()
+
+
+@app.get(f"{base}/certificates/{{domain}}/logs")
+def certificate_logs(domain: str, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == domain)).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="certificate record not found")
+    return {
+        "domain": rec.domain,
+        "status": rec.status,
+        "fail_reason": rec.fail_reason,
+        "retries": rec.retries,
+        "last_synced_node": rec.last_synced_node,
+        "updated_at": rec.updated_at.isoformat() if rec.updated_at else "",
+    }
+
+
+@app.delete(f"{base}/certificates/{{domain}}")
+async def delete_certificate(domain: str, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == domain)).first()
+    if not rec:
+        return {"ok": True, "exists": False}
+    session.delete(rec)
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True}
+
+
+@app.post(f"{base}/certificates/{{domain}}/verify")
+async def verify_certificate_once(domain: str, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == domain)).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="certificate record not found")
+    rec.status = "retrying"
+    rec.retries += 1
+    rec.updated_at = datetime.utcnow()
+    session.add(rec)
+    session.commit()
+    return await dispatch_certificate_apply(rec.domain, rec.verify_mode, session)
 
 
 @app.post(f"{base}/certificates/{{domain}}/retry")

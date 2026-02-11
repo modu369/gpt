@@ -71,8 +71,10 @@ WantedBy=multi-user.target
 SERVICE
 
 systemctl daemon-reload
-systemctl enable --now cfrelay-agent
-systemctl enable --now haproxy
+systemctl enable cfrelay-agent >/dev/null 2>&1 || true
+systemctl enable haproxy >/dev/null 2>&1 || true
+systemctl restart cfrelay-agent
+systemctl restart haproxy || true
 
 IP=$(curl -fsSL https://api.ipify.org || hostname -I | awk '{print $1}')
 CPU=$(nproc)
@@ -89,9 +91,29 @@ if command -v speedtest-cli >/dev/null 2>&1; then
 fi
 MAX_BW=$(( DOWN < UP ? DOWN : UP ))
 
-curl -fsSL -X POST "$CONTROLLER/$ADMIN_PATH/api/nodes/register" \
-  -H 'Content-Type: application/json' \
-  -d "{\"token\":\"$TOKEN\",\"name\":\"$NODE_NAME\",\"endpoint\":\"http://$IP:18080\",\"shared_secret\":\"$SHARED_SECRET\",\"cpu_cores\":$CPU,\"memory_mb\":$MEM,\"max_bandwidth_mbps\":$MAX_BW}" \
-  || true
+for _ in $(seq 1 20); do
+  if curl -fsS "http://127.0.0.1:18080/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+REG_PAYLOAD="{\"token\":\"$TOKEN\",\"name\":\"$NODE_NAME\",\"endpoint\":\"http://$IP:18080\",\"shared_secret\":\"$SHARED_SECRET\",\"cpu_cores\":$CPU,\"memory_mb\":$MEM,\"max_bandwidth_mbps\":$MAX_BW}"
+REG_URL="$CONTROLLER/$ADMIN_PATH/api/nodes/register"
+OK=0
+for _ in $(seq 1 10); do
+  code=$(curl -sS -o /tmp/cfrelay_register_resp.txt -w "%{http_code}" -X POST "$REG_URL" -H 'Content-Type: application/json' -d "$REG_PAYLOAD" || true)
+  if [[ "$code" == "200" ]]; then
+    OK=1
+    break
+  fi
+  sleep 2
+done
+
+if [[ "$OK" != "1" ]]; then
+  echo "ERROR: agent register failed, status=$code"
+  cat /tmp/cfrelay_register_resp.txt || true
+  exit 1
+fi
 
 echo "Agent installed/updated and now active."

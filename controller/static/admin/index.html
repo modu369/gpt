@@ -67,15 +67,15 @@
           <div class="row" style="margin-top:8px"><button onclick="saveSettings()">保存设置</button><span id="setMsg" class="muted"></span></div>
         </div>
         <div class="card col-6"><h3>同步配置</h3><button onclick="syncAll()">立即同步全部配置到所有节点</button><pre id="syncOut" class="muted"></pre></div>
-        <div class="card col-6"><h3>域名白名单</h3><div class="row"><input id="domainIn" placeholder="example.com" style="flex:1"><button onclick="addDomain()">添加</button></div><div id="domains" class="muted" style="margin-top:8px"></div></div>
-        <div class="card col-6"><h3>Cloudflare IP 池</h3><div class="row"><input id="cfIpIn" placeholder="1.1.1.1" style="flex:1"><button onclick="addCfIp()">添加</button></div><div id="cfips" class="muted" style="margin-top:8px"></div></div>
+        <div class="card col-6"><h3>域名白名单</h3><div class="row"><input id="domainIn" placeholder="example.com" style="flex:1"><button onclick="addDomain()">添加</button></div><div id="domains" style="margin-top:8px"></div></div>
+        <div class="card col-6"><h3>Cloudflare IP 池</h3><div class="row"><input id="cfIpIn" placeholder="1.1.1.1" style="flex:1"><button onclick="addCfIp()">添加</button></div><div id="cfips" style="margin-top:8px"></div></div>
       </div>
     </div>
 
     <div id="page-cert" class="page">
       <div class="card"><h3>证书中心</h3>
         <div class="row"><input id="certDomain" placeholder="example.com" style="flex:1"><select id="certMode"><option value="http">http</option><option value="dns">dns</option></select><button onclick="applyCert()">申请/重试</button></div>
-        <table style="margin-top:8px"><thead><tr><th>域名</th><th>状态</th><th>重试</th></tr></thead><tbody id="certT"></tbody></table>
+        <table style="margin-top:8px"><thead><tr><th>域名</th><th>状态</th><th>操作</th></tr></thead><tbody id="certT"></tbody></table>
       </div>
     </div>
   </div>
@@ -119,9 +119,9 @@ async function refreshAll(){
   cpuText.textContent=`已用 ${o.totals?.cpu_used_cores_est||0}/${o.totals?.cpu_cores||0} 核`; memText.textContent=`已用 ${o.totals?.memory_used_mb||0}/${o.totals?.memory_mb||0} MB`; bwText.textContent=`已用 ${o.totals?.bandwidth_used_mbps||0}/${o.totals?.bandwidth_mbps||0} Mbps`;
   const nodes=await api('/nodes',{headers:hdr()});
   nodesT.innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</td><td><button onclick="speedtestNode('${n.name}')">重测</button></td><td><button onclick="showNodeCmds('${n.name}')">安装/卸载</button></td></tr>`).join('');
-  const domains=await api('/whitelist',{headers:hdr()}); document.getElementById('domains').textContent=domains.map(x=>x.domain).join(', ')||'(空)';
-  const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').textContent=cf.map(x=>`${x.ip}:80,443`).join(', ')||'(空)';
-  const certs=await api('/certificates',{headers:hdr()}); certT.innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}</td><td><button onclick="retryCert('${c.domain}')">重试</button></td></tr>`).join('');
+  const domains=await api('/whitelist',{headers:hdr()}); document.getElementById('domains').innerHTML=domains.map(x=>`<div class="row"><span>${x.domain}</span><button class="secondary" onclick="deleteDomain(${JSON.stringify(x.domain)})">删除</button></div>`).join('')||'<span class="muted">(空)</span>';
+  const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').innerHTML=cf.map(x=>`<div class="row"><span>${x.ip}:80,443</span><button class="secondary" onclick="deleteCfIp(${JSON.stringify(x.ip)})">删除</button></div>`).join('')||'<span class="muted">(空)</span>';
+  const certs=await api('/certificates',{headers:hdr()}); certT.innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}</td><td><button onclick="retryCert(${JSON.stringify(c.domain)})">重试</button><button class="secondary" onclick="verifyCert(${JSON.stringify(c.domain)})">手动重试本次验证</button><button class="secondary" onclick="showCertLogs(${JSON.stringify(c.domain)})">日志</button><button class="secondary" onclick="deleteCert(${JSON.stringify(c.domain)})">删除</button></td></tr>`).join('');
   const s=await api('/settings',{headers:hdr()}); setPort.value=s.controller_port; setPath.value=s.admin_path; setUser.value=s.default_admin_user; setPwd.value=s.default_admin_password;
 }
 async function createNodeCmd(){const name=(document.getElementById('nodeName').value||'').trim();const msg=document.getElementById('nodeCmdMsg');if(!name){msg.textContent='请先输入节点名称';return;}msg.textContent='生成中...';try{const r=await api('/nodes/onboard',{method:'POST',headers:hdr(),body:JSON.stringify({node_name:name})});document.getElementById('installCmd').value=r.install_command||'';document.getElementById('uninstallCmd').value=r.uninstall_command||'';msg.textContent='生成成功';}catch(e){if(String(e.message||'').includes('Not Found')){try{const t=await api('/node-tokens',{method:'POST',headers:hdr()});const controllerUrl=window.location.origin;const adminPath=panelPath.replace(/^\//,'');document.getElementById('installCmd').value=`bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh -o /tmp/install_agent.sh && chmod +x /tmp/install_agent.sh && /tmp/install_agent.sh --controller ${controllerUrl} --admin-path ${adminPath} --token ${t.token} --node-name ${name}"`;document.getElementById('uninstallCmd').value='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';msg.textContent='生成成功（兼容模式）';return;}catch(e2){msg.textContent='生成失败: '+e2.message;return;}}msg.textContent='生成失败: '+e.message;}}
@@ -130,7 +130,13 @@ async function addDomain(){await api('/whitelist',{method:'POST',headers:hdr(),b
 async function addCfIp(){await api('/cf-ips',{method:'POST',headers:hdr(),body:JSON.stringify({ip:cfIpIn.value})}); refreshAll();}
 async function saveSettings(){const r=await api('/settings',{method:'POST',headers:hdr(),body:JSON.stringify({controller_port:Number(setPort.value),admin_path:setPath.value,default_admin_user:setUser.value,default_admin_password:setPwd.value})}); setMsg.textContent=r.message;}
 async function applyCert(){await api('/certificates/manual',{method:'POST',headers:hdr(),body:JSON.stringify({domain:certDomain.value,verify_mode:certMode.value})}); refreshAll();}
-async function retryCert(domain){await api(`/certificates/${domain}/retry`,{method:'POST',headers:hdr()}); refreshAll();}
+async function retryCert(domain){await api(`/certificates/${encodeURIComponent(domain)}/retry`,{method:'POST',headers:hdr()}); refreshAll();}
+
+async function deleteDomain(domain){await api(`/whitelist/${encodeURIComponent(domain)}`,{method:'DELETE',headers:hdr()});refreshAll();}
+async function deleteCfIp(ip){await api(`/cf-ips/${encodeURIComponent(ip)}`,{method:'DELETE',headers:hdr()});refreshAll();}
+async function showCertLogs(domain){const r=await api(`/certificates/${encodeURIComponent(domain)}/logs`,{headers:hdr()});window.prompt(`证书日志: ${domain}`,JSON.stringify(r,null,2));}
+async function deleteCert(domain){await api(`/certificates/${encodeURIComponent(domain)}`,{method:'DELETE',headers:hdr()});refreshAll();}
+async function verifyCert(domain){await api(`/certificates/${encodeURIComponent(domain)}/verify`,{method:'POST',headers:hdr()});refreshAll();}
 async function syncAll(){const r=await api('/sync',{method:'POST',headers:hdr()}); syncOut.textContent=JSON.stringify(r,null,2);}
 function closeCmdModal(){document.getElementById('cmdModal').classList.remove('show');}
 async function copyCmd(id){const txt=document.getElementById(id).value;const msg=document.getElementById('copyMsg');try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(txt);}else{const t=document.getElementById(id);t.focus();t.select();document.execCommand('copy');}msg.textContent='复制成功';}catch(e){msg.textContent='复制失败，请手动复制';}}
