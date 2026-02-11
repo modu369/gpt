@@ -13,7 +13,7 @@
     .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap} input,button,select{border-radius:8px;border:1px solid #d1d5db;background:#fff;color:#111827;padding:8px}
     button{cursor:pointer;background:var(--primary);color:#fff;border-color:var(--primary)} button.secondary{background:#fff;color:#111827}
     table{width:100%;border-collapse:collapse;font-size:13px} th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
-    .pill{padding:2px 8px;border-radius:999px;font-size:12px;background:#ecfeff;color:#155e75}.monitor{text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:220px}.circle{width:120px;height:120px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;margin:6px auto}
+    .pill{padding:2px 8px;border-radius:999px;font-size:12px;background:#ecfeff;color:#155e75}.monitor{text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:220px}.circle{width:120px;height:120px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;margin:6px auto;background:#e5e7eb}
     #app{display:none} #loginBox{max-width:430px;margin:12vh auto;background:var(--card);padding:20px;border-radius:12px;border:1px solid var(--line)} .page{display:none}.page.active{display:block}
     textarea{width:100%;min-height:70px;border:1px solid var(--line);border-radius:8px;padding:8px}
   </style>
@@ -87,7 +87,7 @@ const base = `${panelPath}/api`;
 function hdr(){return {'Content-Type':'application/json','Authorization':`Bearer ${token}`};}
 async function api(path,opt={}){const r=await fetch(base+path,opt); if(!r.ok) throw new Error(await r.text()); return r.json();}
 function openPage(name){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(`page-${name}`).classList.add('active');}
-function drawCircle(id,p){const pct=Math.max(0,Math.min(100,Math.round(p)));const el=document.getElementById(id);el.style.background=`conic-gradient(#2563eb ${pct}%, #e5e7eb ${pct}% 100%)`;el.textContent=`${pct}%`;}
+function drawCircle(id,p){const pct=Math.max(0,Math.min(100,Math.round(p)));const el=document.getElementById(id);el.style.background=`radial-gradient(closest-side, #fff 62%, transparent 63% 100%), conic-gradient(#2563eb ${pct}%, #e5e7eb ${pct}% 100%)`;el.textContent=`${pct}%`;}
 async function login(){
   const username=document.getElementById('username').value; const password=document.getElementById('password').value;
   try{const r=await fetch(base+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})}); if(!r.ok) throw new Error(await r.text()); const j=await r.json(); token=j.access_token; localStorage.setItem('cf_token',token); document.getElementById('loginBox').style.display='none'; document.getElementById('app').style.display='block'; refreshAll();}
@@ -116,8 +116,7 @@ async function saveSettings(){const r=await api('/settings',{method:'POST',heade
 async function applyCert(){await api('/certificates/manual',{method:'POST',headers:hdr(),body:JSON.stringify({domain:certDomain.value,verify_mode:certMode.value})}); refreshAll();}
 async function retryCert(domain){await api(`/certificates/${domain}/retry`,{method:'POST',headers:hdr()}); refreshAll();}
 async function syncAll(){const r=await api('/sync',{method:'POST',headers:hdr()}); syncOut.textContent=JSON.stringify(r,null,2);}
-async function showUninstallCmd(nodeName){const cmd='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';alert(`节点 ${nodeName} 卸载命令:
-${cmd}`);}
+async function showUninstallCmd(nodeName){const cmd='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';window.prompt(`节点 ${nodeName} 卸载命令（可复制）`,cmd);}
 if(token){document.getElementById('loginBox').style.display='none';document.getElementById('app').style.display='block';refreshAll().catch((e)=>{document.getElementById('loginMsg').textContent='自动刷新失败: '+e.message;});}
 </script>
 </body>
