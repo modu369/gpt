@@ -79,6 +79,13 @@ class CertRequestIn(BaseModel):
     verify_mode: str = "http"
 
 
+class CertReportIn(BaseModel):
+    domain: str
+    status: str
+    detail: str = ""
+    verify_mode: str = "http"
+
+
 class NodeCreateIn(BaseModel):
     node_name: str
 
@@ -305,6 +312,35 @@ async def trigger_node_speedtest(node_name: str, _: Admin = Depends(auth), sessi
     return data
 
 
+
+
+@app.post(f"{base}/nodes/{{node_name}}/certificates/report")
+async def report_certificate_status(
+    node_name: str,
+    data: CertReportIn,
+    x_agent_secret: str = Header(default=""),
+    session: Session = Depends(get_session),
+):
+    node = session.exec(select(Node).where(Node.name == node_name)).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="node not found")
+    if x_agent_secret != node.shared_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == data.domain)).first()
+    if not rec:
+        rec = CertificateRecord(domain=data.domain, verify_mode=data.verify_mode)
+        session.add(rec)
+
+    rec.verify_mode = data.verify_mode
+    rec.status = data.status
+    rec.fail_reason = data.detail if data.status != "issued" else ""
+    rec.last_synced_node = node.name
+    rec.updated_at = datetime.utcnow()
+    session.add(rec)
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True}
 @app.post(f"{base}/nodes/{{node_name}}/metrics")
 def report_metrics(node_name: str, data: NodeMetricIn, x_agent_secret: str = Header(default=""), session: Session = Depends(get_session)):
     node = session.exec(select(Node).where(Node.name == node_name)).first()
@@ -373,6 +409,10 @@ async def add_domain(data: DomainIn, _: Admin = Depends(auth), session: Session 
     if not cert:
         session.add(CertificateRecord(domain=data.domain, verify_mode="http", status="pending"))
     session.commit()
+    try:
+        await dispatch_certificate_apply(data.domain, "http", session)
+    except Exception:
+        pass
     await push_all_nodes(session)
     return {"ok": True}
 

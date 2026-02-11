@@ -36,7 +36,11 @@ frontend fe_http
   acl acme_path path_beg /.well-known/acme-challenge/
 {chr(10).join(acl_lines)}
 {deny_line}
-  default_backend be_cf
+  http-request set-header X-Forwarded-Proto http
+  default_backend be_gate
+
+backend be_gate
+  server gate 127.0.0.1:18080 check
 
 backend be_cf
   balance roundrobin
@@ -48,5 +52,6 @@ frontend fe_https
   bind *:443 ssl crt /etc/haproxy/certs/ strict-sni
 {chr(10).join(acl_lines)}
 {deny_line}
+  http-request set-header X-Forwarded-Proto https
   default_backend be_cf
 """.strip() + "\n"
