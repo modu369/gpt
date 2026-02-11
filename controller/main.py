@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import asyncio
 import subprocess
 from pathlib import Path
@@ -18,6 +18,7 @@ from .models import (
     CertificateRecord,
     CfIp,
     DnsScheduleConfig,
+    DnsAutoConfig,
     AcmeChallenge,
     OverloadEvent,
     Node,
@@ -61,6 +62,9 @@ class NodeMetricIn(BaseModel):
     memory_mb_used: int
     bandwidth_mbps_used: float
     monthly_traffic_used_gb: float = 0
+    traffic_month: str = ""
+    traffic_rx_gb: float = 0
+    traffic_tx_gb: float = 0
 
 
 class DomainIn(BaseModel):
@@ -114,6 +118,23 @@ class ChallengeSyncIn(BaseModel):
     content: str
 
 
+class DnsAutoConfigIn(BaseModel):
+    enabled: bool = False
+    interval_sec: int = 30
+    change_threshold: int = 5
+
+
+class CertDnsStartIn(BaseModel):
+    provider: str = "manual"
+    zone_id: str = ""
+    record_name: str = ""
+    record_value: str = ""
+
+
+class CertDnsVerifyIn(BaseModel):
+    challenge_id: int
+
+
 def auth(authorization: str = Header(default=""), session: Session = Depends(get_session)) -> Admin:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -128,10 +149,15 @@ def auth(authorization: str = Header(default=""), session: Session = Depends(get
     return admin
 
 
+_last_dns_signature = ""
+_last_dns_weights: dict[str, int] = {}
+
+
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
     asyncio.create_task(cf_ip_health_loop())
+    asyncio.create_task(dns_auto_reconcile_loop())
 
 
 def get_system_setting(session: Session) -> SystemSetting:
@@ -254,6 +280,113 @@ def record_overload_event(session: Session, node: Node, reason: str, value: floa
     else:
         session.add(OverloadEvent(node_name=node.name, reason=reason, value=value, threshold=threshold, occurred_at=now))
 
+def get_dns_auto_config(session: Session) -> DnsAutoConfig:
+    cfg = session.exec(select(DnsAutoConfig).where(DnsAutoConfig.id == 1)).first()
+    if not cfg:
+        cfg = DnsAutoConfig(id=1)
+        session.add(cfg)
+        session.commit()
+        session.refresh(cfg)
+    return cfg
+
+
+def _candidate_node_weights(session: Session) -> list[NodeWeight]:
+    candidates: List[NodeWeight] = []
+    for n in session.exec(select(Node).where(Node.enabled == True)).all():  # noqa: E712
+        if not n.online:
+            continue
+        cpu_p = n.used_cpu_percent
+        mem_p = 100.0 * n.used_memory_mb / n.memory_mb if n.memory_mb else 0.0
+        bw_p = 100.0 * n.used_bandwidth_mbps / n.max_bandwidth_mbps if n.max_bandwidth_mbps else 0.0
+        if max(cpu_p, mem_p, bw_p) >= 95:
+            continue
+        w = compute_weight(cpu_p, mem_p, bw_p)
+        host = n.endpoint.replace("http://", "").replace("https://", "").split(":")[0]
+        candidates.append(NodeWeight(ip=host, weight=w))
+    return candidates
+
+
+def _candidate_signature(candidates: list[NodeWeight]) -> str:
+    rows = sorted((x.ip, x.weight) for x in candidates)
+    return "|".join([f"{ip}:{w}" for ip, w in rows])
+
+
+def _weight_delta(prev: dict[str, int], curr: list[NodeWeight]) -> int:
+    delta = 0
+    curr_map = {x.ip: x.weight for x in curr}
+    for ip in set(prev.keys()) | set(curr_map.keys()):
+        delta += abs(curr_map.get(ip, 0) - prev.get(ip, 0))
+    return delta
+
+
+def reconcile_dns_impl(session: Session) -> dict:
+    cfg = session.exec(select(DnsScheduleConfig)).first()
+    if not cfg:
+        raise HTTPException(status_code=400, detail="dns config not set")
+    candidates = _candidate_node_weights(session)
+    ok, message = update_weighted_records(
+        ak=settings.hw_access_key,
+        sk=settings.hw_secret_key,
+        region=settings.hw_region,
+        zone_id=cfg.zone_id or settings.hw_zone_id,
+        recordset_name=cfg.cname,
+        ttl=cfg.ttl,
+        targets=candidates,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail=message)
+    auto_cfg = get_dns_auto_config(session)
+    auto_cfg.last_run_at = datetime.utcnow()
+    auto_cfg.last_message = message
+    session.add(auto_cfg)
+    session.commit()
+    return {"ok": True, "message": message, "targets": [c.__dict__ for c in candidates]}
+
+
+async def _doh_txt(name: str) -> list[str]:
+    urls = [
+        "https://cloudflare-dns.com/dns-query",
+        "https://dns.google/resolve",
+    ]
+    out: list[str] = []
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        for u in urls:
+            try:
+                if "cloudflare" in u:
+                    r = await client.get(u, params={"name": name, "type": "TXT"}, headers={"accept": "application/dns-json"})
+                else:
+                    r = await client.get(u, params={"name": name, "type": "TXT"})
+                data = r.json()
+                answers = data.get("Answer") or []
+                for ans in answers:
+                    v = (ans.get("data") or "").strip('"')
+                    if v:
+                        out.append(v)
+            except Exception:
+                continue
+    return out
+
+
+async def dns_auto_reconcile_loop() -> None:
+    global _last_dns_signature, _last_dns_weights
+    while True:
+        try:
+            with Session(engine) as session:
+                cfg = get_dns_auto_config(session)
+                if settings.dns_auto_reconcile and cfg.enabled:
+                    candidates = _candidate_node_weights(session)
+                    sig = _candidate_signature(candidates)
+                    delta = _weight_delta(_last_dns_weights, candidates)
+                    if sig != _last_dns_signature and delta >= cfg.change_threshold:
+                        reconcile_dns_impl(session)
+                        _last_dns_signature = sig
+                        _last_dns_weights = {x.ip: x.weight for x in candidates}
+                    await asyncio.sleep(max(5, cfg.interval_sec))
+                    continue
+        except Exception:
+            pass
+        await asyncio.sleep(10)
+
 @app.get(f"/{settings.admin_path}/healthz")
 def panel_healthz():
     return {"ok": True, "service": "controller", "admin_path": settings.admin_path}
@@ -302,8 +435,24 @@ def set_settings(data: SettingsIn, _: Admin = Depends(auth), session: Session = 
 
     session.add(cfg)
     session.commit()
-    return {"ok": True, "message": "保存成功，端口/路径变更需要重启主控服务后生效"}
+    return {"ok": True, "message": "保存成功（账号密码立即生效；端口/路径将由安装脚本更新服务配置并平滑重启）"}
 
+
+@app.post(f"{base}/settings/apply-runtime")
+def apply_runtime_settings(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    cfg = get_system_setting(session)
+    result = {
+        "ok": True,
+        "target_port": cfg.controller_port,
+        "target_admin_path": cfg.admin_path,
+        "message": "请重新执行 install_controller.sh 以平滑更新 systemd 配置并立即生效（无需重启服务器）",
+    }
+    try:
+        subprocess.run(["systemctl", "restart", "cfrelay-controller"], check=False)
+        result["service_restart"] = "triggered"
+    except Exception as exc:
+        result["service_restart"] = f"failed: {exc}"
+    return result
 
 @app.post(f"{base}/node-tokens")
 def create_node_token(_: Admin = Depends(auth), session: Session = Depends(get_session)):
@@ -441,7 +590,16 @@ def report_metrics(node_name: str, data: NodeMetricIn, x_agent_secret: str = Hea
     node.used_cpu_percent = data.cpu_percent
     node.used_memory_mb = data.memory_mb_used
     node.used_bandwidth_mbps = data.bandwidth_mbps_used
-    node.monthly_traffic_used_gb = data.monthly_traffic_used_gb
+    node.traffic_month = data.traffic_month or datetime.utcnow().strftime("%Y-%m")
+    node.traffic_rx_gb = max(0.0, data.traffic_rx_gb)
+    node.traffic_tx_gb = max(0.0, data.traffic_tx_gb)
+    if node.traffic_count_mode == "ingress":
+        node.monthly_traffic_used_gb = node.traffic_rx_gb
+    elif node.traffic_count_mode == "egress":
+        node.monthly_traffic_used_gb = node.traffic_tx_gb
+    else:
+        calc_both = node.traffic_rx_gb + node.traffic_tx_gb
+        node.monthly_traffic_used_gb = calc_both if calc_both > 0 else max(0.0, data.monthly_traffic_used_gb)
     node.online = True
     node.updated_at = datetime.utcnow()
     if node.used_cpu_percent >= 90:
@@ -470,6 +628,20 @@ def report_metrics(node_name: str, data: NodeMetricIn, x_agent_secret: str = Hea
 
     session.add(node)
     session.commit()
+
+    auto_cfg = get_dns_auto_config(session)
+    if settings.dns_auto_reconcile and auto_cfg.enabled:
+        global _last_dns_signature, _last_dns_weights
+        candidates = _candidate_node_weights(session)
+        sig = _candidate_signature(candidates)
+        delta = _weight_delta(_last_dns_weights, candidates)
+        if sig != _last_dns_signature and delta >= auto_cfg.change_threshold:
+            try:
+                reconcile_dns_impl(session)
+                _last_dns_signature = sig
+                _last_dns_weights = {x.ip: x.weight for x in candidates}
+            except Exception:
+                pass
     return {"ok": True}
 
 
@@ -637,36 +809,116 @@ def get_dns_config(_: Admin = Depends(auth), session: Session = Depends(get_sess
 
 @app.post(f"{base}/dns/reconcile")
 def reconcile_dns(_: Admin = Depends(auth), session: Session = Depends(get_session)):
-    cfg = session.exec(select(DnsScheduleConfig)).first()
-    if not cfg:
-        raise HTTPException(status_code=400, detail="dns config not set")
+    return reconcile_dns_impl(session)
 
-    candidates: List[NodeWeight] = []
-    for n in session.exec(select(Node).where(Node.enabled == True)).all():  # noqa: E712
-        if not n.online:
-            continue
-        cpu_p = n.used_cpu_percent
-        mem_p = 100.0 * n.used_memory_mb / n.memory_mb if n.memory_mb else 0.0
-        bw_p = 100.0 * n.used_bandwidth_mbps / n.max_bandwidth_mbps if n.max_bandwidth_mbps else 0.0
-        if max(cpu_p, mem_p, bw_p) >= 95:
-            continue
-        w = compute_weight(cpu_p, mem_p, bw_p)
-        host = n.endpoint.replace("http://", "").replace("https://", "").split(":")[0]
-        candidates.append(NodeWeight(ip=host, weight=w))
 
-    ok, message = update_weighted_records(
-        ak=settings.hw_access_key,
-        sk=settings.hw_secret_key,
-        region=settings.hw_region,
-        zone_id=cfg.zone_id or settings.hw_zone_id,
-        recordset_name=cfg.cname,
-        ttl=cfg.ttl,
-        targets=candidates,
+@app.post(f"{base}/dns/reconcile/now")
+def reconcile_dns_now(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    return reconcile_dns_impl(session)
+
+
+@app.post(f"{base}/dns/auto-config")
+def set_dns_auto_config(data: DnsAutoConfigIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    cfg = get_dns_auto_config(session)
+    cfg.enabled = data.enabled
+    cfg.interval_sec = max(5, data.interval_sec)
+    cfg.change_threshold = max(1, data.change_threshold)
+    cfg.updated_at = datetime.utcnow()
+    session.add(cfg)
+    session.commit()
+    return {"ok": True, "config": cfg}
+
+
+@app.get(f"{base}/dns/auto-config")
+def get_dns_auto(_: Admin = Depends(auth), session: Session = Depends(get_session)):
+    return get_dns_auto_config(session)
+
+
+@app.post(f"{base}/certificates/{{domain}}/dns/start")
+async def start_certificate_dns(domain: str, data: CertDnsStartIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    if not settings.cert_dns_v2:
+        raise HTTPException(status_code=404, detail="CERT_DNS_V2 disabled")
+    token = data.record_value.strip() or secrets.token_urlsafe(24)
+    record_name = data.record_name.strip() or f"_acme-challenge.{domain}"
+    rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == domain)).first()
+    if not rec:
+        rec = CertificateRecord(domain=domain, verify_mode="dns", status="pending")
+    rec.verify_mode = "dns"
+    rec.dns_phase = "waiting_dns"
+    rec.status = "pending"
+    rec.updated_at = datetime.utcnow()
+
+    chall = AcmeChallenge(
+        domain=domain,
+        token=token,
+        content=token,
+        verify_mode="dns",
+        status="pending",
+        provider=data.provider or "manual",
+        zone_id=data.zone_id or "",
+        record_name=record_name,
+        expires_at=datetime.utcnow() + timedelta(days=7),
+        cleanup_state="pending",
     )
-    if not ok:
-        raise HTTPException(status_code=500, detail=message)
-    return {"ok": True, "message": message, "targets": [c.__dict__ for c in candidates]}
+    session.add(chall)
+    session.commit()
+    session.refresh(chall)
+    rec.challenge_id = chall.id
+    session.add(rec)
+    session.commit()
+    await push_all_nodes(session)
+    return {
+        "ok": True,
+        "challenge_id": chall.id,
+        "txt_name": record_name,
+        "txt_value": token,
+        "status": "waiting_dns",
+    }
 
+
+@app.post(f"{base}/certificates/{{domain}}/dns/verify")
+async def verify_certificate_dns(domain: str, data: CertDnsVerifyIn, _: Admin = Depends(auth), session: Session = Depends(get_session)):
+    if not settings.cert_dns_v2:
+        raise HTTPException(status_code=404, detail="CERT_DNS_V2 disabled")
+    chall = session.exec(select(AcmeChallenge).where(AcmeChallenge.id == data.challenge_id, AcmeChallenge.domain == domain)).first()
+    if not chall:
+        raise HTTPException(status_code=404, detail="challenge not found")
+
+    values = await _doh_txt(chall.record_name or f"_acme-challenge.{domain}")
+    if chall.content not in values:
+        return {"ok": False, "status": "waiting_dns", "detail": "TXT not propagated", "answers": values}
+
+    nodes: List[Node] = session.exec(select(Node).where(Node.enabled == True)).all()  # noqa: E712
+    if not nodes:
+        raise HTTPException(status_code=400, detail="no enabled nodes")
+    n = nodes[0]
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{n.endpoint.rstrip('/')}/agent/cert/precheck",
+            json={"domain": domain, "verify_mode": "dns"},
+            headers={"X-Agent-Secret": n.shared_secret},
+        )
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+
+    chall.status = "verified"
+    chall.verified_at = datetime.utcnow()
+    chall.cleanup_state = "active"
+    chall.updated_at = datetime.utcnow()
+
+    rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == domain)).first()
+    if not rec:
+        rec = CertificateRecord(domain=domain, verify_mode="dns")
+    rec.verify_mode = "dns"
+    rec.status = "retrying"
+    rec.dns_phase = "issuing"
+    rec.challenge_id = chall.id
+    rec.last_verify_at = datetime.utcnow()
+    rec.updated_at = datetime.utcnow()
+    session.add(chall)
+    session.add(rec)
+    session.commit()
+    return await dispatch_certificate_apply(domain, "dns", session)
 
 @app.post(f"{base}/certificates/{{domain}}/precheck")
 async def precheck_certificate(domain: str, verify_mode: str = "http", _: Admin = Depends(auth), session: Session = Depends(get_session)):
@@ -704,6 +956,7 @@ async def add_certificate_manual(data: CertRequestIn, _: Admin = Depends(auth), 
     rec.status = "pending"
     rec.fail_reason = ""
     rec.verify_mode = data.verify_mode
+    rec.dns_phase = "none" if data.verify_mode == "http" else "waiting_dns"
     rec.updated_at = datetime.utcnow()
     session.add(rec)
     session.commit()
@@ -796,10 +1049,18 @@ async def dispatch_certificate_apply(domain: str, verify_mode: str, session: Ses
     rec = session.exec(select(CertificateRecord).where(CertificateRecord.domain == domain)).first()
     if rec:
         rec.status = "issued" if success else "failed"
+        rec.dns_phase = "issued" if success and verify_mode == "dns" else rec.dns_phase
         rec.fail_reason = "" if success else str(results)
         rec.last_synced_node = ",".join([x.get("node", "") for x in results if x.get("status") == 200])
         rec.updated_at = datetime.utcnow()
         session.add(rec)
+        if success and verify_mode == "dns" and rec.challenge_id:
+            chall = session.exec(select(AcmeChallenge).where(AcmeChallenge.id == rec.challenge_id)).first()
+            if chall:
+                chall.status = "done"
+                chall.cleanup_state = "done"
+                chall.updated_at = datetime.utcnow()
+                session.add(chall)
         session.commit()
     await push_all_nodes(session)
     return {"results": results}

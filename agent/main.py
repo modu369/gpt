@@ -267,6 +267,34 @@ def save_cert_state(domain: str, status: str, detail: str) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _traffic_monthly_usage() -> dict:
+    now_month = datetime_now_month()
+    path = Path(settings.state_dir) / "traffic_state.json"
+    total_rx, total_tx = _sum_bytes_split()
+    state = {"month": now_month, "base_rx": total_rx, "base_tx": total_tx}
+    if path.exists():
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            state = {"month": now_month, "base_rx": total_rx, "base_tx": total_tx}
+    if state.get("month") != now_month:
+        state = {"month": now_month, "base_rx": total_rx, "base_tx": total_tx}
+    used_rx = max(0, total_rx - int(state.get("base_rx", total_rx)))
+    used_tx = max(0, total_tx - int(state.get("base_tx", total_tx)))
+    state["last_rx"] = total_rx
+    state["last_tx"] = total_tx
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "month": now_month,
+        "rx_gb": round(used_rx / 1024 / 1024 / 1024, 4),
+        "tx_gb": round(used_tx / 1024 / 1024 / 1024, 4),
+    }
+
+
+def datetime_now_month() -> str:
+    return time.strftime("%Y-%m")
+
+
 def _metric_snapshot() -> dict:
     cpu = 0.0
     try:
@@ -292,22 +320,33 @@ def _metric_snapshot() -> dict:
     except Exception:
         bw = 0.0
 
+    traffic = _traffic_monthly_usage()
     return {
         "cpu_percent": round(cpu, 2),
         "memory_mb_used": int(mem_used / 1024),
         "bandwidth_mbps_used": round(bw, 2),
-        "monthly_traffic_used_gb": 0.0,
+        "monthly_traffic_used_gb": round(traffic["rx_gb"] + traffic["tx_gb"], 4),
+        "traffic_month": traffic["month"],
+        "traffic_rx_gb": traffic["rx_gb"],
+        "traffic_tx_gb": traffic["tx_gb"],
     }
 
 
 def _sum_bytes() -> int:
-    total = 0
+    rx, tx = _sum_bytes_split()
+    return rx + tx
+
+
+def _sum_bytes_split() -> tuple[int, int]:
+    rx_total = 0
+    tx_total = 0
     with open("/proc/net/dev", "r", encoding="utf-8") as f:
         for line in f.readlines()[2:]:
             parts = line.replace(":", " ").split()
             if len(parts) >= 10:
-                total += int(parts[1]) + int(parts[9])
-    return total
+                rx_total += int(parts[1])
+                tx_total += int(parts[9])
+    return rx_total, tx_total
 
 
 async def report_metrics_loop() -> None:

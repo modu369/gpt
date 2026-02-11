@@ -31,6 +31,18 @@ def migrate_schema() -> None:
     _sqlite_add_column_if_missing("certificaterecord", "fail_reason", "VARCHAR DEFAULT ''")
     _sqlite_add_column_if_missing("certificaterecord", "retries", "INTEGER DEFAULT 0")
     _sqlite_add_column_if_missing("certificaterecord", "last_synced_node", "VARCHAR DEFAULT ''")
+    _sqlite_add_column_if_missing("node", "traffic_month", "VARCHAR DEFAULT ''")
+    _sqlite_add_column_if_missing("node", "traffic_rx_gb", "FLOAT DEFAULT 0")
+    _sqlite_add_column_if_missing("node", "traffic_tx_gb", "FLOAT DEFAULT 0")
+    _sqlite_add_column_if_missing("certificaterecord", "dns_phase", "VARCHAR DEFAULT 'none'")
+    _sqlite_add_column_if_missing("certificaterecord", "challenge_id", "INTEGER")
+    _sqlite_add_column_if_missing("certificaterecord", "last_verify_at", "DATETIME")
+    _sqlite_add_column_if_missing("acmechallenge", "provider", "VARCHAR DEFAULT 'manual'")
+    _sqlite_add_column_if_missing("acmechallenge", "zone_id", "VARCHAR DEFAULT ''")
+    _sqlite_add_column_if_missing("acmechallenge", "record_name", "VARCHAR DEFAULT ''")
+    _sqlite_add_column_if_missing("acmechallenge", "verified_at", "DATETIME")
+    _sqlite_add_column_if_missing("acmechallenge", "expires_at", "DATETIME")
+    _sqlite_add_column_if_missing("acmechallenge", "cleanup_state", "VARCHAR DEFAULT 'pending'")
 
 
 def init_db() -> None:

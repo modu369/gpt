@@ -44,6 +44,10 @@ class Node(SQLModel, table=True):
     traffic_suspended_month: str = ""
     last_speedtest_at: datetime = Field(default_factory=datetime.utcnow)
 
+    traffic_month: str = ""
+    traffic_rx_gb: float = 0
+    traffic_tx_gb: float = 0
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -78,6 +82,16 @@ class DnsScheduleConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class DnsAutoConfig(SQLModel, table=True):
+    id: Optional[int] = Field(default=1, primary_key=True)
+    enabled: bool = False
+    interval_sec: int = 30
+    change_threshold: int = 5
+    last_run_at: datetime = Field(default_factory=datetime.utcnow)
+    last_message: str = ""
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class CertificateRecord(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     domain: str = Field(index=True, unique=True)
@@ -87,6 +101,9 @@ class CertificateRecord(SQLModel, table=True):
     retries: int = 0
     last_synced_node: str = ""
     cert_expires_at: str = ""
+    dns_phase: str = "none"
+    challenge_id: Optional[int] = None
+    last_verify_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -97,6 +114,12 @@ class AcmeChallenge(SQLModel, table=True):
     content: str
     verify_mode: str = "http"
     status: str = "pending"
+    provider: str = "manual"
+    zone_id: str = ""
+    record_name: str = ""
+    verified_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    cleanup_state: str = "pending"
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
