@@ -15,7 +15,7 @@
     table{width:100%;border-collapse:collapse;font-size:13px} th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
     .pill{padding:2px 8px;border-radius:999px;font-size:12px;background:#ecfeff;color:#155e75}.monitor{text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:220px}.circle{width:120px;height:120px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;margin:6px auto;background:#e5e7eb}
     #app{display:none} #loginBox{max-width:430px;margin:12vh auto;background:var(--card);padding:20px;border-radius:12px;border:1px solid var(--line)} .page{display:none}.page.active{display:block}
-    textarea{width:100%;min-height:70px;border:1px solid var(--line);border-radius:8px;padding:8px}
+    textarea{width:100%;min-height:70px;border:1px solid var(--line);border-radius:8px;padding:8px} .modal{position:fixed;inset:0;background:rgba(17,24,39,.35);display:none;align-items:center;justify-content:center;padding:20px;z-index:20}.modal.show{display:flex}.modal-card{background:#fff;border:1px solid var(--line);border-radius:12px;max-width:900px;width:100%;padding:14px}
   </style>
 </head>
 <body>
@@ -54,7 +54,7 @@
 
         <div class="card col-12">
           <h3>节点列表</h3>
-          <table><thead><tr><th>名称</th><th>地址</th><th>在线</th><th>CPU%</th><th>内存MB</th><th>带宽Mbps</th><th>最大带宽测速</th><th>卸载</th></tr></thead><tbody id="nodesT"></tbody></table>
+          <table><thead><tr><th>名称</th><th>地址</th><th>在线</th><th>CPU%</th><th>内存MB</th><th>带宽Mbps</th><th>最大带宽测速</th><th>安装/卸载</th></tr></thead><tbody id="nodesT"></tbody></table>
         </div>
       </div>
     </div>
@@ -80,6 +80,22 @@
     </div>
   </div>
 </div>
+<div id="cmdModal" class="modal">
+  <div class="modal-card">
+    <div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">节点安装/卸载命令</h3>
+      <button class="secondary" onclick="closeCmdModal()">关闭</button>
+    </div>
+    <div class="muted" id="cmdNodeName" style="margin-top:6px"></div>
+    <div class="muted" style="margin-top:10px">安装命令</div>
+    <textarea id="modalInstallCmd" readonly></textarea>
+    <div class="row" style="margin-top:8px"><button onclick="copyCmd('modalInstallCmd')">复制安装命令</button></div>
+    <div class="muted" style="margin-top:10px">卸载命令</div>
+    <textarea id="modalUninstallCmd" readonly></textarea>
+    <div class="row" style="margin-top:8px"><button onclick="copyCmd('modalUninstallCmd')">复制卸载命令</button><span id="copyMsg" class="muted"></span></div>
+  </div>
+</div>
+
 <script>
 let token = localStorage.getItem('cf_token') || '';
 const panelPath = '/' + (location.pathname.split('/').filter(Boolean)[0] || 'yun123');
@@ -102,7 +118,7 @@ async function refreshAll(){
   drawCircle('cpuCircle',cpuP); drawCircle('memCircle',memP); drawCircle('bwCircle',bwP);
   cpuText.textContent=`已用 ${o.totals?.cpu_used_cores_est||0}/${o.totals?.cpu_cores||0} 核`; memText.textContent=`已用 ${o.totals?.memory_used_mb||0}/${o.totals?.memory_mb||0} MB`; bwText.textContent=`已用 ${o.totals?.bandwidth_used_mbps||0}/${o.totals?.bandwidth_mbps||0} Mbps`;
   const nodes=await api('/nodes',{headers:hdr()});
-  nodesT.innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</td><td><button onclick="speedtestNode('${n.name}')">重测</button></td><td><button onclick="showUninstallCmd('${n.name}')">卸载命令</button></td></tr>`).join('');
+  nodesT.innerHTML=nodes.map(n=>`<tr><td>${n.name}</td><td>${n.endpoint}</td><td><span class="pill">${n.online?'online':'offline'}</span></td><td>${n.used_cpu_percent||0}</td><td>${n.used_memory_mb||0}/${n.memory_mb||0}</td><td>${n.used_bandwidth_mbps||0}/${n.max_bandwidth_mbps||0}</td><td><button onclick="speedtestNode('${n.name}')">重测</button></td><td><button onclick="showNodeCmds('${n.name}')">安装/卸载</button></td></tr>`).join('');
   const domains=await api('/whitelist',{headers:hdr()}); document.getElementById('domains').textContent=domains.map(x=>x.domain).join(', ')||'(空)';
   const cf=await api('/cf-ips',{headers:hdr()}); document.getElementById('cfips').textContent=cf.map(x=>`${x.ip}:80,443`).join(', ')||'(空)';
   const certs=await api('/certificates',{headers:hdr()}); certT.innerHTML=certs.map(c=>`<tr><td>${c.domain}</td><td>${c.status}</td><td><button onclick="retryCert('${c.domain}')">重试</button></td></tr>`).join('');
@@ -116,7 +132,9 @@ async function saveSettings(){const r=await api('/settings',{method:'POST',heade
 async function applyCert(){await api('/certificates/manual',{method:'POST',headers:hdr(),body:JSON.stringify({domain:certDomain.value,verify_mode:certMode.value})}); refreshAll();}
 async function retryCert(domain){await api(`/certificates/${domain}/retry`,{method:'POST',headers:hdr()}); refreshAll();}
 async function syncAll(){const r=await api('/sync',{method:'POST',headers:hdr()}); syncOut.textContent=JSON.stringify(r,null,2);}
-async function showUninstallCmd(nodeName){const cmd='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';window.prompt(`节点 ${nodeName} 卸载命令（可复制）`,cmd);}
+function closeCmdModal(){document.getElementById('cmdModal').classList.remove('show');}
+async function copyCmd(id){const txt=document.getElementById(id).value;const msg=document.getElementById('copyMsg');try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(txt);}else{const t=document.getElementById(id);t.focus();t.select();document.execCommand('copy');}msg.textContent='复制成功';}catch(e){msg.textContent='复制失败，请手动复制';}}
+async function showNodeCmds(nodeName){const controllerUrl=window.location.origin;const adminPath=panelPath.replace(/^\//,'');const uninstall='bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/uninstall.sh | bash"';let install='';try{const r=await api('/nodes/onboard',{method:'POST',headers:hdr(),body:JSON.stringify({node_name:nodeName})});install=r.install_command||'';}catch(e){const t=await api('/node-tokens',{method:'POST',headers:hdr()});install=`bash -lc "curl -fsSL https://raw.githubusercontent.com/modu369/gpt/codex/implement-management-backend-updates/scripts/install_agent.sh -o /tmp/install_agent.sh && chmod +x /tmp/install_agent.sh && /tmp/install_agent.sh --controller ${controllerUrl} --admin-path ${adminPath} --token ${t.token} --node-name ${nodeName}"`;}document.getElementById('cmdNodeName').textContent=`节点: ${nodeName}（重新执行安装命令即可更新并立即生效）`;document.getElementById('modalInstallCmd').value=install;document.getElementById('modalUninstallCmd').value=uninstall;document.getElementById('copyMsg').textContent='';document.getElementById('cmdModal').classList.add('show');}
 if(token){document.getElementById('loginBox').style.display='none';document.getElementById('app').style.display='block';refreshAll().catch((e)=>{document.getElementById('loginMsg').textContent='自动刷新失败: '+e.message;});}
 </script>
 </body>
