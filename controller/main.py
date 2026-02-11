@@ -341,6 +341,19 @@ async def report_certificate_status(
     session.commit()
     await push_all_nodes(session)
     return {"ok": True}
+@app.post(f"{base}/nodes/{{node_name}}/unregister")
+async def unregister_node(node_name: str, x_agent_secret: str = Header(default=""), session: Session = Depends(get_session)):
+    node = session.exec(select(Node).where(Node.name == node_name)).first()
+    if not node:
+        return {"ok": True, "exists": False}
+    if x_agent_secret != node.shared_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    session.delete(node)
+    session.commit()
+    await push_all_nodes(session)
+    return {"ok": True}
+
+
 @app.post(f"{base}/nodes/{{node_name}}/metrics")
 def report_metrics(node_name: str, data: NodeMetricIn, x_agent_secret: str = Header(default=""), session: Session = Depends(get_session)):
     node = session.exec(select(Node).where(Node.name == node_name)).first()
