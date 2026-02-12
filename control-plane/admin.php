@@ -1,10 +1,10 @@
 <?php
 /**
- * admin.php - 旗舰版 V4.2 (PRG修复 + API路径修正)
+ * admin.php - 旗舰版 V4.3 (最终修复版)
  * * 变更日志：
- * 1. [修复] 节点安装命令中 master URL 缺少 /api 后缀导致 404 的问题。
- * 2. [优化] 增加 Post/Redirect/Get 逻辑，防止刷新页面时重复提交表单数据。
- * 3. [保留] V4.1 的所有功能（UI说明、系统设置等）。
+ * 1. [修复] 节点安装命令中补全 /api 路径，解决被控端 404 问题。
+ * 2. [修复] 增加 PRG (Post-Redirect-Get) 机制，彻底解决刷新页面重复提交表单的问题。
+ * 3. [修复] 优化重定向 URL 生成策略，解决部分 Nginx 环境下 Tab 标签无法保持的问题。
  */
 
 session_start();
@@ -25,7 +25,8 @@ $CONF_SLUG = get_setting($pdo, 'admin_slug', 'yun123');
 // 退出登录逻辑
 if (isset($_GET['logout'])) {
     session_destroy();
-    header("Location: " . strtok($_SERVER['REQUEST_URI'], '?') . "?slug=" . $CONF_SLUG);
+    // 退出后重定向回安全入口
+    header("Location: " . $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG);
     exit;
 }
 
@@ -42,7 +43,8 @@ if (!isset($_SESSION['is_admin']) && strpos($request_uri, $CONF_SLUG) === false 
 if (!isset($_SESSION['is_admin'])) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['username']??'') === $CONF_USER && ($_POST['password']??'') === $CONF_PASS) {
         $_SESSION['is_admin'] = true; 
-        header("Location: ".$_SERVER['REQUEST_URI']); 
+        // 登录成功后跳转，防止刷新重发 POST
+        header("Location: " . $_SERVER['REQUEST_URI']); 
         exit;
     }
     // 登录界面
@@ -70,11 +72,11 @@ if (!isset($_SESSION['is_admin'])) {
     exit;
 }
 
-// ================= 3. 业务逻辑处理 =================
+// ================= 3. 业务逻辑处理 (PRG模式) =================
 $message = '';
-$active_tab = $_REQUEST['tab'] ?? 'nodes';
+$active_tab = $_GET['tab'] ?? 'nodes'; // 默认从 GET 获取 tab
 
-// [优化] 检查 Session 中是否有重定向传来的消息 (PRG模式)
+// [新增] 读取并清除 Session 中的临时消息
 if (isset($_SESSION['flash_msg'])) {
     $message = $_SESSION['flash_msg'];
     unset($_SESSION['flash_msg']);
@@ -82,9 +84,10 @@ if (isset($_SESSION['flash_msg'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+    // 获取提交时的 tab，用于重定向回该页面
     if(isset($_POST['tab'])) $active_tab = $_POST['tab'];
 
-    $temp_message = ''; // 临时存储消息
+    $temp_msg = ''; // 临时消息
 
     try {
         // --- 域名管理 ---
@@ -92,29 +95,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $domain = trim($_POST['domain']);
             if ($domain) {
                 $pdo->prepare("INSERT INTO domains (domain) VALUES (?)")->execute([$domain]);
-                $temp_message = "<div class='alert alert-success'>域名 $domain 添加成功</div>";
+                $temp_msg = "<div class='alert alert-success'>域名 $domain 添加成功</div>";
             }
         }
         elseif ($action === 'del_domain') {
             $pdo->prepare("DELETE FROM domains WHERE id=?")->execute([$_POST['id']]);
-            $temp_message = "<div class='alert alert-success'>域名已删除</div>";
+            $temp_msg = "<div class='alert alert-success'>域名已删除</div>";
         }
         
         // --- 节点管理 ---
         elseif ($action === 'add_node') {
             $name = $_POST['hostname']; $ip = $_POST['ip']; $secret = bin2hex(random_bytes(16));
             $pdo->prepare("INSERT INTO nodes (hostname, ip_address, secret_key) VALUES (?, ?, ?)")->execute([$name, $ip, $secret]);
-            $temp_message = "<div class='alert alert-success'>节点添加成功</div>";
+            $temp_msg = "<div class='alert alert-success'>节点添加成功</div>";
         }
         elseif ($action === 'del_node') {
             $pdo->prepare("DELETE FROM nodes WHERE id=?")->execute([$_POST['id']]);
-            // 删除操作不一定要提示，或者也可以加上提示
+            // 删除操作可选提示
         }
         elseif ($action === 'update_node_config') {
             $id = intval($_POST['id']);
             $pdo->prepare("UPDATE nodes SET traffic_limit=?, weight=?, max_bandwidth=?, max_ram=? WHERE id=?")
                 ->execute([$_POST['traffic_limit'], $_POST['weight'], $_POST['max_bandwidth'], $_POST['max_ram'], $id]);
-            $temp_message = "<div class='alert alert-success'>节点配置已保存</div>";
+            $temp_msg = "<div class='alert alert-success'>节点配置已保存</div>";
         }
         
         // --- IP 池管理 ---
@@ -140,7 +143,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmtDel = $pdo->prepare("DELETE FROM cf_ip_pool WHERE ip_address NOT IN ($placeholders)");
                 $stmtDel->execute($ips);
             }
-            $temp_message = "<div class='alert alert-success'>IP 池已更新并同步</div>";
+            $temp_msg = "<div class='alert alert-success'>IP 池已更新并同步</div>";
         }
         
         // --- DNS 配置 ---
@@ -151,7 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES (?, ?)")->execute([$k, json_encode(trim($_POST[$k]))]);
                 }
             }
-            $temp_message = "<div class='alert alert-success'>DNS API 配置已保存</div>";
+            $temp_msg = "<div class='alert alert-success'>DNS API 配置已保存</div>";
         }
         
         // --- 证书管理 ---
@@ -160,15 +163,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $prov = ($mode=='auto' && get_setting($pdo,'dns_provider','')=='huaweicloud') ? 'huaweicloud' : 'cloudflare';
             $pdo->prepare("INSERT INTO certificates (domain, mode, provider, auto_renew, apply_status, status_msg) VALUES (?, ?, ?, ?, 'processing', '等待处理...')")
                 ->execute([$_POST['domain'], $mode, $prov, isset($_POST['auto_renew'])?1:0]);
-            $temp_message = "<div class='alert alert-info'>申请已提交</div>";
+            $temp_msg = "<div class='alert alert-info'>申请已提交</div>";
         }
         elseif ($action === 'del_cert') {
             $pdo->prepare("DELETE FROM certificates WHERE id=?")->execute([$_POST['id']]);
-            $temp_message = "<div class='alert alert-success'>证书已删除</div>";
+            $temp_msg = "<div class='alert alert-success'>证书已删除</div>";
         }
         elseif ($action === 'verify_manual_cert') {
             $pdo->prepare("UPDATE certificates SET apply_status='verifying', status_msg='等待验证...' WHERE id=?")->execute([$_POST['id']]);
-            $temp_message = "<div class='alert alert-warning'>已提交验证请求</div>";
+            $temp_msg = "<div class='alert alert-warning'>已提交验证请求</div>";
         }
         
         // --- 告警管理 ---
@@ -177,7 +180,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         elseif ($action === 'mark_all_read') {
             $pdo->query("UPDATE node_alerts SET is_read=1");
-            $temp_message = "<div class='alert alert-success'>所有告警已标记为已读</div>";
+            $temp_msg = "<div class='alert alert-success'>所有告警已标记为已读</div>";
         }
         
         // --- 系统设置 ---
@@ -186,23 +189,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if(!empty($_POST['admin_pass'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_pass', ?)")->execute([json_encode($_POST['admin_pass'])]);
             if(!empty($_POST['admin_slug'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_slug', ?)")->execute([json_encode($_POST['admin_slug'])]);
             
-            $temp_message = "<div class='alert alert-success'>系统设置已更新，下次登录请使用新凭据/入口</div>";
+            $temp_msg = "<div class='alert alert-success'>系统设置已更新，下次登录请使用新凭据/入口</div>";
             // 刷新本地变量
             $CONF_USER = $_POST['admin_user']; $CONF_PASS = $_POST['admin_pass']; $CONF_SLUG = $_POST['admin_slug'];
         }
 
     } catch (Exception $e) {
-        $temp_message = "<div class='alert alert-danger'>操作失败: " . $e->getMessage() . "</div>";
+        $temp_msg = "<div class='alert alert-danger'>操作失败: " . $e->getMessage() . "</div>";
     }
 
-    // [优化] PRG 模式：保存消息并重定向
-    // 构建跳转 URL，保留slug和当前的tab
-    if (!empty($temp_message)) {
-        $_SESSION['flash_msg'] = $temp_message;
+    // [核心优化] PRG 跳转逻辑
+    // 1. 保存消息到 Session
+    if (!empty($temp_msg)) {
+        $_SESSION['flash_msg'] = $temp_msg;
     }
-    $redirect_url = strtok($_SERVER['REQUEST_URI'], '?') . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab;
+    // 2. 构造重定向 URL
+    // 使用 SCRIPT_NAME 确保获取到真实的 .php 文件路径，避免 Nginx 伪静态导致 URL 参数丢失
+    $redirect_url = $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab;
+    
+    // 3. 执行跳转并终止脚本
     header("Location: " . $redirect_url);
-    exit; // 终止脚本执行，等待浏览器重定向
+    exit;
 }
 
 // ================= 4. 数据聚合查询 =================
@@ -307,7 +314,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                             $nodes = $pdo->query("SELECT * FROM nodes ORDER BY id DESC")->fetchAll();
                             foreach($nodes as $node):
                                 $is_online = (time()-$node['last_heartbeat'])<65;
-                                // [修复] 这里的命令中增加了 /api 路径
+                                // [修复] 补全 /api 路径，解决 404 问题
                                 $cmd = "wget -O install_node.sh {$master_url}/install_node.sh && chmod +x install_node.sh && ./install_node.sh -master {$master_url}/api -secret {$node['secret_key']}";
                             ?>
                             <tr>
