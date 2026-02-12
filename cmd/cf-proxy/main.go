@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +121,70 @@ func startAdminListener(client *config.APIClient, manager *config.Manager, store
 	}()
 }
 
+type HardwareConfig struct {
+	MaxBW    int `json:"max_bw"`
+	MaxRAM   int `json:"max_ram"`
+	CPUCores int `json:"cpu_cores"`
+}
+
+func getSystemRAMUsage() uint64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(string(data), "\n")
+	var total, avail uint64
+	for _, line := range lines {
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		val, _ := strconv.ParseUint(parts[1], 10, 64)
+		if strings.HasPrefix(parts[0], "MemTotal") {
+			total = val
+		} else if strings.HasPrefix(parts[0], "MemAvailable") {
+			avail = val
+		}
+	}
+	if total < avail {
+		return 0
+	}
+	return (total - avail) / 1024
+}
+
+func getSystemCPUUsage(prevIdle, prevTotal *uint64) float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "cpu ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			return 0
+		}
+		user, _ := strconv.ParseUint(fields[1], 10, 64)
+		nice, _ := strconv.ParseUint(fields[2], 10, 64)
+		sys, _ := strconv.ParseUint(fields[3], 10, 64)
+		idle, _ := strconv.ParseUint(fields[4], 10, 64)
+		total := user + nice + sys + idle
+
+		diffTotal := total - *prevTotal
+		diffIdle := idle - *prevIdle
+
+		*prevTotal = total
+		*prevIdle = idle
+
+		if diffTotal == 0 {
+			return 0
+		}
+		return (1.0 - float64(diffIdle)/float64(diffTotal)) * 100.0
+	}
+	return 0
+}
+
 func main() {
 	masterURL := flag.String("master", "", "control-plane api base url, e.g. http://1.2.3.4/cf-master/api")
 	nodeSecret := flag.String("secret", "", "node secret key")
@@ -145,9 +211,13 @@ func main() {
 	engine := proxy.New(manager)
 	handler := engine.Handler()
 
-	maxBandwidth := 0
-	if bwRaw, err := os.ReadFile("/etc/cf-proxy/bandwidth.conf"); err == nil {
-		_, _ = fmt.Sscanf(string(bwRaw), "%d", &maxBandwidth)
+	hwCfg := HardwareConfig{}
+	if hwRaw, err := os.ReadFile("/etc/cf-proxy/hardware.json"); err == nil {
+		_ = json.Unmarshal(hwRaw, &hwCfg)
+	} else {
+		if bwRaw, err := os.ReadFile("/etc/cf-proxy/bandwidth.conf"); err == nil {
+			_, _ = fmt.Sscanf(string(bwRaw), "%d", &hwCfg.MaxBW)
+		}
 	}
 
 	httpSrv := &http.Server{Addr: proxy.HTTPAddr(snap.HTTPPort), Handler: handler}
@@ -155,22 +225,26 @@ func main() {
 
 	startAdminListener(client, manager, store, *nodeSecret, *adminListenAddr)
 
+	var prevIdle, prevTotal uint64
+	getSystemCPUUsage(&prevIdle, &prevTotal)
+
 	go func() {
 		ticker := time.NewTicker(*heartbeatInterval)
 		defer ticker.Stop()
 		for range ticker.C {
 			up, down := engine.ConsumeTraffic()
-			var mem runtime.MemStats
-			runtime.ReadMemStats(&mem)
+			sysCPU := getSystemCPUUsage(&prevIdle, &prevTotal)
+			sysRAM := getSystemRAMUsage()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 			if err := client.SendHeartbeat(ctx, config.HeartbeatPayload{
-				CPU:         0,
-				RAMMB:       mem.Alloc / 1024 / 1024,
+				CPU:         sysCPU,
+				RAMMB:       sysRAM,
 				Goroutines:  runtime.NumGoroutine(),
 				TrafficUp:   up,
 				TrafficDown: down,
-				MaxBW:       maxBandwidth,
+				MaxBW:       hwCfg.MaxBW,
+				MaxRAM:      hwCfg.MaxRAM,
 			}); err != nil {
 				log.Printf("[Heartbeat] failed: %v", err)
 			}

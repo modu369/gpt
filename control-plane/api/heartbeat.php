@@ -23,6 +23,7 @@ $ram = isset($input['ram']) ? (float)$input['ram'] : 0.0;
 $up = isset($input['traffic_up']) ? (int)$input['traffic_up'] : 0;
 $down = isset($input['traffic_down']) ? (int)$input['traffic_down'] : 0;
 $maxBW = isset($input['max_bw']) ? (int)$input['max_bw'] : 0;
+$maxRAM = isset($input['max_ram']) ? (int)$input['max_ram'] : 0;
 $trafficInc = max(0, $up) + max(0, $down);
 
 $nodeStmt = $pdo->prepare('SELECT id, last_heartbeat FROM nodes WHERE secret_key = ? LIMIT 1');
@@ -45,6 +46,10 @@ $params = [$currentTime, $cpu, $ram, $trafficInc, $currentBandwidth];
 if ($maxBW > 0) {
     $sql .= ', max_bandwidth = IF(max_bandwidth = 0, ?, max_bandwidth)';
     $params[] = $maxBW;
+}
+if ($maxRAM > 0) {
+    $sql .= ', max_ram = IF(max_ram = 0, ?, max_ram)';
+    $params[] = $maxRAM;
 }
 $sql .= ' WHERE id = ?';
 $params[] = (int)$node['id'];

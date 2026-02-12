@@ -43,6 +43,7 @@ type HeartbeatPayload struct {
 	TrafficUp   uint64  `json:"traffic_up"`
 	TrafficDown uint64  `json:"traffic_down"`
 	MaxBW       int     `json:"max_bw"`
+	MaxRAM      int     `json:"max_ram"`
 }
 
 type APIClient struct {
@@ -96,11 +97,6 @@ func (c *APIClient) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 }
 
 func (c *APIClient) SendHeartbeat(ctx context.Context, hb HeartbeatPayload) error {
-	if hb.RAMMB == 0 {
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-		hb.RAMMB = mem.Alloc / 1024 / 1024
-	}
 	if hb.Goroutines == 0 {
 		hb.Goroutines = runtime.NumGoroutine()
 	}

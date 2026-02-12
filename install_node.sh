@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# install_node.sh - 被控端一键安装脚本
+# install_node.sh - V6.0 智能负载均衡版 (自动采集硬件配置)
 # 用法: ./install_node.sh -master http://x.x.x.x:8080/api -secret xxxx
 
 REPO_URL="https://github.com/modu369/gpt.git"
@@ -59,7 +59,7 @@ fi
 echo -e "${GREEN}1/6 安装依赖 (Go, Git)...${PLAIN}"
 export DEBIAN_FRONTEND=noninteractive
 apt update -y
-apt install -y git wget tar curl ca-certificates
+apt install -y git wget tar curl ca-certificates jq
 
 if ! command -v go >/dev/null 2>&1; then
   wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz -O /tmp/go1.22.0.linux-amd64.tar.gz
@@ -80,10 +80,10 @@ cd "${BUILD_DIR}"
 /usr/local/go/bin/go build -ldflags "-s -w" -o /usr/local/bin/cf-proxy ./cmd/cf-proxy
 chmod +x /usr/local/bin/cf-proxy
 
-echo -e "${GREEN}3/6 带宽配置 (可选测速)...${PLAIN}"
+echo -e "${GREEN}3/6 硬件配置采集...${PLAIN}"
 MAX_BW=0
 read -r -p "是否进行网络带宽测速 (耗时约30秒)? [y/n] " run_speedtest || true
-if [[ "${run_speedtest:-n}" == "y" || "${run_speedtest:-n}" == "Y" ]]; then
+if [[ "${run_speedtest:-n}" =~ ^[yY]$ ]]; then
   echo "正在安装 speedtest-cli..."
   apt install -y speedtest-cli
   echo "正在测速，请耐心等待..."
@@ -99,17 +99,27 @@ if [[ "${run_speedtest:-n}" == "y" || "${run_speedtest:-n}" == "Y" ]]; then
       else
         MAX_BW="$UP_INT"
       fi
-      echo -e "${GREEN}测速完成! 上行: ${UP} Mbps, 下行: ${DOWN} Mbps${PLAIN}"
-      echo -e "${GREEN}自动设置带宽上限为: ${MAX_BW} Mbps${PLAIN}"
+      echo -e "${GREEN}测速结果: 上行 ${UP} Mbps / 下行 ${DOWN} Mbps -> 设定上限: ${MAX_BW} Mbps${PLAIN}"
     fi
   else
     echo -e "${RED}测速失败，跳过自动设置。${PLAIN}"
   fi
 else
-  echo "已跳过测速。请稍后在管理后台手动设置带宽上限。"
+  echo "已跳过测速。"
 fi
+
+CPU_CORES="$(nproc)"
+TOTAL_RAM="$(free -m | awk '/Mem:/ {print $2}')"
+
 mkdir -p /etc/cf-proxy
-echo "$MAX_BW" > /etc/cf-proxy/bandwidth.conf
+cat > /etc/cf-proxy/hardware.json <<EOF
+{
+  "max_bw": ${MAX_BW},
+  "max_ram": ${TOTAL_RAM},
+  "cpu_cores": ${CPU_CORES}
+}
+EOF
+echo -e "${GREEN}硬件信息已录入: CPU=${CPU_CORES}核, RAM=${TOTAL_RAM}MB, BW=${MAX_BW}Mbps${PLAIN}"
 
 echo -e "${GREEN}4/6 注册 Systemd 服务...${PLAIN}"
 cat > /etc/systemd/system/cf-proxy.service <<SYSTEMD
