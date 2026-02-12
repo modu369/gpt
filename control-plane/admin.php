@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 session_start();
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/notify.php';
 
 function postStr(string $key): string
 {
@@ -48,64 +49,6 @@ function detect_request_slug(): string
     }
 
     return '';
-}
-
-function notify_all_nodes(PDO $pdo): array
-{
-    $nodes = $pdo->query('SELECT ip_address, secret_key FROM nodes WHERE status = 1')->fetchAll();
-    if (empty($nodes)) {
-        return ['total' => 0, 'ok' => 0];
-    }
-
-    if (!function_exists('curl_multi_init')) {
-        return ['total' => count($nodes), 'ok' => 0, 'error' => 'cURL 扩展未启用，无法广播'];
-    }
-
-    $mh = curl_multi_init();
-    $handles = [];
-    foreach ($nodes as $node) {
-        $ip = trim((string)$node['ip_address']);
-        if ($ip === '') {
-            continue;
-        }
-
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, sprintf('http://%s:7777/reload', $ip));
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, '');
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-Node-Secret: ' . (string)$node['secret_key']]);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 2);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1);
-
-        curl_multi_add_handle($mh, $ch);
-        $handles[] = $ch;
-    }
-
-    $active = null;
-    do {
-        $mrc = curl_multi_exec($mh, $active);
-    } while ($mrc === CURLM_CALL_MULTI_PERFORM);
-
-    while ($active && $mrc === CURLM_OK) {
-        if (curl_multi_select($mh) !== -1) {
-            do {
-                $mrc = curl_multi_exec($mh, $active);
-            } while ($mrc === CURLM_CALL_MULTI_PERFORM);
-        }
-    }
-
-    $ok = 0;
-    foreach ($handles as $ch) {
-        if ((int)curl_getinfo($ch, CURLINFO_HTTP_CODE) === 200) {
-            $ok++;
-        }
-        curl_multi_remove_handle($mh, $ch);
-        curl_close($ch);
-    }
-    curl_multi_close($mh);
-
-    return ['total' => count($handles), 'ok' => $ok];
 }
 
 function run_acme_command(string $cmd): string
@@ -268,7 +211,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $raw = (string)($_POST['cf_ips'] ?? '');
         $ips = array_values(array_filter(array_map(static fn(string $line): string => trim($line), explode("\n", $raw))));
         set_setting($pdo, 'cf_ips', $ips);
-        $message = '<div class="alert alert-success">CF 优选 IP 池已更新。</div>';
+        $message = '<div class="alert alert-success">CF 优选 IP 池（主控监控） 池已更新。</div>';
+        $shouldNotify = true;
+    } elseif ($action === 'add_cf_ip') {
+        $newIP = postStr('new_ip');
+        if (filter_var($newIP, FILTER_VALIDATE_IP)) {
+            $pdo->prepare('INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES (?)')->execute([$newIP]);
+            $message = '<div class="alert alert-success">CF IP 已添加。</div>';
+            $shouldNotify = true;
+        } else {
+            $message = '<div class="alert alert-warning">请输入合法 IP 地址。</div>';
+        }
+    } elseif ($action === 'del_cf_ip') {
+        $rowID = (int)postStr('id');
+        $pdo->prepare('DELETE FROM cf_ip_pool WHERE id = ?')->execute([$rowID]);
+        $message = '<div class="alert alert-success">CF IP 已删除。</div>';
         $shouldNotify = true;
 
     } elseif ($action === 'save_dns') {
@@ -369,6 +326,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $nodes = $pdo->query('SELECT * FROM nodes ORDER BY id DESC')->fetchAll();
 $domains = $pdo->query('SELECT * FROM domains ORDER BY id DESC')->fetchAll();
 $cfIPs = get_setting($pdo, 'cf_ips', []);
+$cfIPsList = $pdo->query('SELECT * FROM cf_ip_pool ORDER BY status DESC, latency ASC, id ASC')->fetchAll();
 $certsList = $pdo->query('SELECT * FROM certificates ORDER BY id DESC')->fetchAll();
 if (!is_array($cfIPs)) {
     $cfIPs = [];

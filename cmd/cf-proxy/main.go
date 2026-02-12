@@ -142,7 +142,6 @@ func main() {
 
 	snap := manager.Snapshot()
 	engine := proxy.New(manager)
-	engine.StartCFHealthCheck(context.Background(), 5*time.Second)
 	handler := engine.Handler()
 
 	httpSrv := &http.Server{Addr: proxy.HTTPAddr(snap.HTTPPort), Handler: handler}

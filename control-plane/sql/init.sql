@@ -34,6 +34,19 @@ CREATE TABLE IF NOT EXISTS `settings` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
+
+
+CREATE TABLE IF NOT EXISTS `cf_ip_pool` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `ip_address` varchar(45) NOT NULL,
+  `status` tinyint(1) DEFAULT 1 COMMENT '1正常 0宕机',
+  `latency` int(11) DEFAULT 0 COMMENT '延迟ms',
+  `fail_count` int(11) DEFAULT 0 COMMENT '连续失败次数',
+  `last_check` int(11) DEFAULT 0 COMMENT '最后检测时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `ip` (`ip_address`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS `certificates` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `domain` varchar(255) NOT NULL COMMENT '证书域名',
@@ -71,3 +84,7 @@ INSERT INTO `settings` (`key_name`, `value_json`) VALUES
 ('cf_zone_id', JSON_QUOTE('')),
 ('cf_record_name', JSON_QUOTE('cdn'))
 ON DUPLICATE KEY UPDATE value_json = VALUES(value_json);
+
+
+INSERT IGNORE INTO `cf_ip_pool` (`ip_address`) VALUES
+('104.16.123.96'), ('172.64.80.1'), ('162.159.128.1');

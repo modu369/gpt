@@ -10,7 +10,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,9 +42,6 @@ type Engine struct {
 
 	upTraffic   atomic.Uint64
 	downTraffic atomic.Uint64
-
-	healthMu   sync.RWMutex
-	healthCFIPs []string
 }
 
 func New(manager *config.Manager) *Engine {
@@ -139,62 +135,6 @@ func (e *Engine) ConsumeTraffic() (up uint64, down uint64) {
 	return
 }
 
-func (e *Engine) StartCFHealthCheck(ctx context.Context, interval time.Duration) {
-	if interval <= 0 {
-		interval = 5 * time.Second
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				snap := e.manager.Snapshot()
-				if len(snap.CFIPs) == 0 {
-					continue
-				}
-				live := checkHealthyCFIPs(snap.CFIPs)
-				if len(live) == 0 {
-					live = snap.CFIPs
-				}
-				e.healthMu.Lock()
-				e.healthCFIPs = live
-				e.healthMu.Unlock()
-			}
-		}
-	}()
-}
-
-func checkHealthyCFIPs(ips []string) []string {
-	var wg sync.WaitGroup
-	live := make([]string, 0, len(ips))
-	var mu sync.Mutex
-
-	for _, ip := range ips {
-		ip := strings.TrimSpace(ip)
-		if ip == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(target string) {
-			defer wg.Done()
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(target, "443"), time.Second)
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-			mu.Lock()
-			live = append(live, target)
-			mu.Unlock()
-		}(ip)
-	}
-	wg.Wait()
-	return live
-}
-
 func (e *Engine) isAllowed(host string) bool {
 	s := e.manager.Snapshot()
 	_, ok := s.Whitelist[host]
@@ -202,18 +142,12 @@ func (e *Engine) isAllowed(host string) bool {
 }
 
 func (e *Engine) nextCFIP() string {
-	e.healthMu.RLock()
-	healthy := append([]string(nil), e.healthCFIPs...)
-	e.healthMu.RUnlock()
-	if len(healthy) == 0 {
-		s := e.manager.Snapshot()
-		healthy = s.CFIPs
-	}
-	if len(healthy) == 0 {
+	s := e.manager.Snapshot()
+	if len(s.CFIPs) == 0 {
 		return "1.1.1.1"
 	}
 	idx := e.rr.Add(1)
-	return healthy[idx%uint64(len(healthy))]
+	return s.CFIPs[idx%uint64(len(s.CFIPs))]
 }
 
 func normalizeHost(raw string) string {

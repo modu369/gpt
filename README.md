@@ -182,3 +182,12 @@ bash install_node.sh --uninstall
 - 仅纳入 `status=1` 且 60 秒内有心跳的节点。
 - 若节点设置了 `traffic_limit`，当 `traffic_used` 达到 95% 阈值会自动从 DNS 池移除。
 - 会同步 Cloudflare A 记录，删除不健康节点 IP、添加恢复健康节点 IP。
+
+
+## Cloudflare IP 主控监控
+
+主控端提供 `control-plane/monitor_cf.php`，用于集中检测 CF IP 健康并在状态变化时推送节点刷新：
+
+```cron
+* * * * * /usr/bin/php /var/www/html/cf-master/monitor_cf.php >> /var/log/cf-monitor.log 2>&1
+```

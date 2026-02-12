@@ -31,12 +31,10 @@ if ((int)$node['status'] === 0) {
 $domainStmt = $pdo->query('SELECT domain FROM domains ORDER BY id ASC');
 $domains = $domainStmt->fetchAll(PDO::FETCH_COLUMN);
 
-$settingStmt = $pdo->prepare("SELECT value_json FROM settings WHERE key_name = 'cf_ips' LIMIT 1");
-$settingStmt->execute();
-$cfIpsJson = $settingStmt->fetchColumn();
-$cfIps = json_decode((string)($cfIpsJson ?: '[]'), true);
-if (!is_array($cfIps)) {
-    $cfIps = [];
+$ipStmt = $pdo->query("SELECT ip_address FROM cf_ip_pool WHERE status = 1 ORDER BY latency ASC, id ASC");
+$cfIps = $ipStmt->fetchAll(PDO::FETCH_COLUMN);
+if (!is_array($cfIps) || empty($cfIps)) {
+    $cfIps = ['104.16.123.96'];
 }
 
 $certStmt = $pdo->query('SELECT domain, cert_body, key_body FROM certificates WHERE status = 1');

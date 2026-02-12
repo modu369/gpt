@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS nodes (id int AUTO_INCREMENT PRIMARY KEY, hostname va
 CREATE TABLE IF NOT EXISTS domains (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, node_group_id int DEFAULT 0, ssl_status tinyint DEFAULT 0, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS settings (key_name varchar(50) PRIMARY KEY, value_json json);
 CREATE TABLE IF NOT EXISTS certificates (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, cert_body text, key_body text, expire_time int DEFAULT 0, status tinyint DEFAULT 0, dns_challenge varchar(255), created_at timestamp DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS cf_ip_pool (id int AUTO_INCREMENT PRIMARY KEY, ip_address varchar(45) UNIQUE, status tinyint DEFAULT 1, latency int DEFAULT 0, fail_count int DEFAULT 0, last_check int DEFAULT 0);
+INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES ('104.16.123.96'),('172.64.80.1'),('162.159.128.1');
 INSERT IGNORE INTO settings (key_name, value_json) VALUES ('admin_user', '"admin"'), ('admin_pass', '"admin123"'), ('admin_slug', '"yun123"'), ('cf_ips', '["104.16.123.96"]'), ('dns_provider', '"cloudflare"'), ('cf_email', '""'), ('cf_key', '""'), ('cf_zone_id', '""'), ('cf_record_name', '"cdn"');
 "
 fi
@@ -93,7 +95,7 @@ server {
         deny all;
     }
 
-    location ~ /(db\.php|database\.sql|sql/init\.sql|cron_dns\.php) {
+    location ~ /(db\.php|database\.sql|sql/init\.sql|cron_dns\.php|monitor_cf\.php) {
         deny all;
     }
 }
@@ -106,7 +108,7 @@ systemctl restart nginx
 
 echo -e "${GREEN}5/8 配置自动 DNS 调度任务...${PLAIN}"
 (crontab -l 2>/dev/null | grep -v "cron_dns.php" || true) | crontab -
-(crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_dns.php >> /var/log/cf-dns.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_dns.php >> /var/log/cf-dns.log 2>&1"; echo "* * * * * /usr/bin/php ${WEB_ROOT}/monitor_cf.php >> /var/log/cf-monitor.log 2>&1") | crontab -
 
 echo -e "${GREEN}6/8 安装 acme.sh 并初始化无邮箱 Let\'s Encrypt 账号...${PLAIN}"
 curl https://get.acme.sh | sh
