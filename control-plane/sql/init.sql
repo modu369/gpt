@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS `nodes` (
   `ram_usage` float DEFAULT 0 COMMENT '内存占用率',
   `traffic_limit` int(11) DEFAULT 0 COMMENT '流量限制(GB)',
   `traffic_used` bigint(20) DEFAULT 0 COMMENT '已用流量(Bytes)',
-  `bandwidth_max` int(11) DEFAULT 0 COMMENT '最大带宽(Mbps)',
+  `max_bandwidth` int(11) DEFAULT 0 COMMENT '最大带宽(Mbps)',
   `weight` int(11) DEFAULT 100 COMMENT '调度权重(0-100)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `secret_key` (`secret_key`)
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS `certificates` (
   UNIQUE KEY `domain` (`domain`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_used`, `bandwidth_max`, `weight`)
+INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_used`, `max_bandwidth`, `weight`)
 VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0, 0, 0, 0, 100);
 
 INSERT IGNORE INTO `domains` (`id`, `domain`, `node_group_id`, `ssl_status`)
@@ -89,3 +89,15 @@ ON DUPLICATE KEY UPDATE value_json = VALUES(value_json);
 
 INSERT IGNORE INTO `cf_ip_pool` (`ip_address`) VALUES
 ('104.16.123.96'), ('172.64.80.1'), ('162.159.128.1');
+
+
+CREATE TABLE IF NOT EXISTS `node_alerts` (
+  `id` int AUTO_INCREMENT PRIMARY KEY,
+  `node_id` int,
+  `node_name` varchar(100),
+  `type` varchar(20) COMMENT 'CPU/RAM/Traffic/Bandwidth',
+  `value` varchar(50) COMMENT '当前值',
+  `message` text,
+  `is_read` tinyint DEFAULT 0 COMMENT '0未读 1已读',
+  `created_at` timestamp DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

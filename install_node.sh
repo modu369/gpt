@@ -46,6 +46,7 @@ if [[ "${UNINSTALL}" == "true" ]]; then
   rm -f /etc/systemd/system/cf-proxy.service
   systemctl daemon-reload
   rm -f /usr/local/bin/cf-proxy
+  rm -rf /etc/cf-proxy
   echo -e "${GREEN}卸载完成${PLAIN}"
   exit 0
 fi
@@ -55,7 +56,7 @@ if [[ -z "${MASTER_URL}" || -z "${NODE_SECRET}" ]]; then
   exit 1
 fi
 
-echo -e "${GREEN}1/5 安装依赖 (Go, Git)...${PLAIN}"
+echo -e "${GREEN}1/6 安装依赖 (Go, Git)...${PLAIN}"
 export DEBIAN_FRONTEND=noninteractive
 apt update -y
 apt install -y git wget tar curl ca-certificates
@@ -70,7 +71,7 @@ if ! grep -q '/usr/local/go/bin' /root/.bashrc; then
   echo 'export PATH=$PATH:/usr/local/go/bin' >> /root/.bashrc
 fi
 
-echo -e "${GREEN}2/5 拉取源码并编译...${PLAIN}"
+echo -e "${GREEN}2/6 拉取源码并编译...${PLAIN}"
 BUILD_DIR="/opt/cf-proxy-src"
 rm -rf "${BUILD_DIR}"
 git clone -b "${BRANCH}" "${REPO_URL}" "${BUILD_DIR}"
@@ -79,7 +80,38 @@ cd "${BUILD_DIR}"
 /usr/local/go/bin/go build -ldflags "-s -w" -o /usr/local/bin/cf-proxy ./cmd/cf-proxy
 chmod +x /usr/local/bin/cf-proxy
 
-echo -e "${GREEN}3/5 注册 Systemd 服务...${PLAIN}"
+echo -e "${GREEN}3/6 带宽配置 (可选测速)...${PLAIN}"
+MAX_BW=0
+read -r -p "是否进行网络带宽测速 (耗时约30秒)? [y/n] " run_speedtest || true
+if [[ "${run_speedtest:-n}" == "y" || "${run_speedtest:-n}" == "Y" ]]; then
+  echo "正在安装 speedtest-cli..."
+  apt install -y speedtest-cli
+  echo "正在测速，请耐心等待..."
+  SPEED_LOG="$(timeout 60 speedtest-cli --simple 2>/dev/null || true)"
+  if [[ -n "${SPEED_LOG}" ]]; then
+    DOWN="$(echo "$SPEED_LOG" | awk '/Download/{print $2}')"
+    UP="$(echo "$SPEED_LOG" | awk '/Upload/{print $2}')"
+    if [[ -n "${DOWN}" && -n "${UP}" ]]; then
+      DOWN_INT="$(printf "%.0f" "$DOWN" 2>/dev/null || echo 0)"
+      UP_INT="$(printf "%.0f" "$UP" 2>/dev/null || echo 0)"
+      if [[ "$DOWN_INT" -lt "$UP_INT" ]]; then
+        MAX_BW="$DOWN_INT"
+      else
+        MAX_BW="$UP_INT"
+      fi
+      echo -e "${GREEN}测速完成! 上行: ${UP} Mbps, 下行: ${DOWN} Mbps${PLAIN}"
+      echo -e "${GREEN}自动设置带宽上限为: ${MAX_BW} Mbps${PLAIN}"
+    fi
+  else
+    echo -e "${RED}测速失败，跳过自动设置。${PLAIN}"
+  fi
+else
+  echo "已跳过测速。请稍后在管理后台手动设置带宽上限。"
+fi
+mkdir -p /etc/cf-proxy
+echo "$MAX_BW" > /etc/cf-proxy/bandwidth.conf
+
+echo -e "${GREEN}4/6 注册 Systemd 服务...${PLAIN}"
 cat > /etc/systemd/system/cf-proxy.service <<SYSTEMD
 [Unit]
 Description=CF-Proxy Node
@@ -97,7 +129,7 @@ RestartSec=5
 WantedBy=multi-user.target
 SYSTEMD
 
-echo -e "${GREEN}4/5 应用内核优化 (BBR)...${PLAIN}"
+echo -e "${GREEN}5/6 应用内核优化 (BBR)...${PLAIN}"
 if ! grep -q '^net.core.default_qdisc=fq$' /etc/sysctl.conf; then
   echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
 fi
@@ -110,7 +142,7 @@ if command -v ufw >/dev/null 2>&1; then
   ufw allow 7777/tcp >/dev/null 2>&1 || true
 fi
 
-echo -e "${GREEN}5/5 启动服务...${PLAIN}"
+echo -e "${GREEN}6/6 启动服务...${PLAIN}"
 systemctl daemon-reload
 systemctl enable cf-proxy
 systemctl restart cf-proxy

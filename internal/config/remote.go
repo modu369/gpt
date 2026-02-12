@@ -42,6 +42,7 @@ type HeartbeatPayload struct {
 	Goroutines  int     `json:"goroutines"`
 	TrafficUp   uint64  `json:"traffic_up"`
 	TrafficDown uint64  `json:"traffic_down"`
+	MaxBW       int     `json:"max_bw"`
 }
 
 type APIClient struct {

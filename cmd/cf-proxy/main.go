@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"runtime"
 	"strings"
@@ -144,6 +145,11 @@ func main() {
 	engine := proxy.New(manager)
 	handler := engine.Handler()
 
+	maxBandwidth := 0
+	if bwRaw, err := os.ReadFile("/etc/cf-proxy/bandwidth.conf"); err == nil {
+		_, _ = fmt.Sscanf(string(bwRaw), "%d", &maxBandwidth)
+	}
+
 	httpSrv := &http.Server{Addr: proxy.HTTPAddr(snap.HTTPPort), Handler: handler}
 	httpsSrv := &http.Server{Addr: proxy.HTTPAddr(snap.HTTPSPort), Handler: handler, TLSConfig: &tls.Config{GetCertificate: store.GetCertificate, MinVersion: tls.VersionTLS12}}
 
@@ -164,6 +170,7 @@ func main() {
 				Goroutines:  runtime.NumGoroutine(),
 				TrafficUp:   up,
 				TrafficDown: down,
+				MaxBW:       maxBandwidth,
 			}); err != nil {
 				log.Printf("[Heartbeat] failed: %v", err)
 			}

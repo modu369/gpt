@@ -22,11 +22,20 @@ $cpu = isset($input['cpu']) ? (float)$input['cpu'] : 0.0;
 $ram = isset($input['ram']) ? (float)$input['ram'] : 0.0;
 $up = isset($input['traffic_up']) ? (int)$input['traffic_up'] : 0;
 $down = isset($input['traffic_down']) ? (int)$input['traffic_down'] : 0;
+$maxBW = isset($input['max_bw']) ? (int)$input['max_bw'] : 0;
 $trafficInc = max(0, $up) + max(0, $down);
 
-$sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ?, traffic_used = traffic_used + ? WHERE secret_key = ?';
+$sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ?, traffic_used = traffic_used + ?';
+$params = [time(), $cpu, $ram, $trafficInc];
+if ($maxBW > 0) {
+    $sql .= ', max_bandwidth = IF(max_bandwidth = 0, ?, max_bandwidth)';
+    $params[] = $maxBW;
+}
+$sql .= ' WHERE secret_key = ?';
+$params[] = $secret;
+
 $stmt = $pdo->prepare($sql);
-$stmt->execute([time(), $cpu, $ram, $trafficInc, $secret]);
+$stmt->execute($params);
 
 if ($stmt->rowCount() === 0) {
     http_response_code(403);

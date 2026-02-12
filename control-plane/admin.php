@@ -253,8 +253,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = '<div class="alert alert-success">流量已清零。</div>';
     } elseif ($action === 'update_node_bandwidth') {
         $nodeID = (int)postStr('id');
-        $bandwidthMax = max(0, (int)postStr('bandwidth_max'));
-        $pdo->prepare('UPDATE nodes SET bandwidth_max = ? WHERE id = ?')->execute([$bandwidthMax, $nodeID]);
+        $bandwidthMax = max(0, (int)postStr('max_bandwidth'));
+        $pdo->prepare('UPDATE nodes SET max_bandwidth = ? WHERE id = ?')->execute([$bandwidthMax, $nodeID]);
         $message = '<div class="alert alert-success">节点带宽上限已更新。</div>';
     } elseif ($action === 'cert_apply') {
         $domain = postStr('domain');
@@ -329,6 +329,7 @@ $domains = $pdo->query('SELECT * FROM domains ORDER BY id DESC')->fetchAll();
 $cfIPs = get_setting($pdo, 'cf_ips', []);
 $cfIPsList = $pdo->query('SELECT * FROM cf_ip_pool ORDER BY status DESC, latency ASC, id ASC')->fetchAll();
 $certsList = $pdo->query('SELECT * FROM certificates ORDER BY id DESC')->fetchAll();
+$unreadCount = (int)$pdo->query('SELECT COUNT(*) FROM node_alerts WHERE is_read = 0')->fetchColumn();
 if (!is_array($cfIPs)) {
     $cfIPs = [];
 }
@@ -382,6 +383,14 @@ foreach ($certsList as $certRow) {
     <?= $message ?>
     <?= $alertHtml ?>
 
+    <?php if ($unreadCount > 0): ?>
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>⚠️ 系统检测到异常！</strong> 有 <?= $unreadCount ?> 条新的超载或熔断记录。
+            <a href="alerts.php" class="btn btn-sm btn-danger ms-3">查看详情</a>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    <?php endif; ?>
+
     <?php if (!empty($nodeAlerts)): ?>
         <div class="alert alert-danger"><strong>⚠️ 系统告警：</strong><br><?= nl2br(htmlspecialchars(implode("
 ", $nodeAlerts), ENT_QUOTES, 'UTF-8')) ?></div>
@@ -424,7 +433,7 @@ foreach ($certsList as $certRow) {
 
         <div class="tab-pane fade" id="tab-dns">
             <div class="card"><div class="card-header">Cloudflare API 配置（自动调度使用）</div><div class="card-body"><form method="post"><input type="hidden" name="action" value="save_dns"><div class="mb-3"><label class="form-label">DNS Provider</label><select name="dns_provider" class="form-select"><option value="cloudflare" <?= $DNS_PROVIDER === 'cloudflare' ? 'selected' : '' ?>>Cloudflare</option></select></div><div class="mb-3"><label class="form-label">CF 邮箱</label><input type="text" name="cf_email" class="form-control" value="<?= htmlspecialchars($CF_EMAIL, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">CF Global API Key</label><input type="password" name="cf_key" class="form-control" value="<?= htmlspecialchars($CF_KEY, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">CF Zone ID</label><input type="text" name="cf_zone_id" class="form-control" value="<?= htmlspecialchars($CF_ZONE, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">调度记录名（例如 cdn）</label><input type="text" name="cf_record_name" class="form-control" value="<?= htmlspecialchars($CF_RECORD, ENT_QUOTES, 'UTF-8') ?>"></div><button class="btn btn-success">保存 DNS 配置</button></form></div></div>
-            <div class="card mt-3"><div class="card-header">带宽上限配置（Mbps）</div><div class="card-body"><table class="table table-sm"><thead><tr><th>节点</th><th>当前上限</th><th>操作</th></tr></thead><tbody><?php foreach ($nodes as $n): ?><tr><td><?= htmlspecialchars((string)$n['hostname'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int)($n['bandwidth_max'] ?? 0) ?></td><td><form method="post" class="d-flex gap-1"><input type="hidden" name="action" value="update_node_bandwidth"><input type="hidden" name="id" value="<?= (int)$n['id'] ?>"><input type="number" min="0" class="form-control form-control-sm" name="bandwidth_max" value="<?= (int)($n['bandwidth_max'] ?? 0) ?>" style="width:90px"><button class="btn btn-sm btn-outline-secondary">保存</button></form></td></tr><?php endforeach; ?></tbody></table></div></div>
+            <div class="card mt-3"><div class="card-header">带宽上限配置（Mbps）</div><div class="card-body"><table class="table table-sm"><thead><tr><th>节点</th><th>当前上限</th><th>操作</th></tr></thead><tbody><?php foreach ($nodes as $n): ?><tr><td><?= htmlspecialchars((string)$n['hostname'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int)($n['max_bandwidth'] ?? 0) ?></td><td><form method="post" class="d-flex gap-1"><input type="hidden" name="action" value="update_node_bandwidth"><input type="hidden" name="id" value="<?= (int)$n['id'] ?>"><input type="number" min="0" class="form-control form-control-sm" name="max_bandwidth" value="<?= (int)($n['max_bandwidth'] ?? 0) ?>" style="width:90px"><button class="btn btn-sm btn-outline-secondary">保存</button></form></td></tr><?php endforeach; ?></tbody></table></div></div>
             <div class="alert alert-info mt-3">系统可通过 <code>cron_dns.php</code> 每分钟同步健康节点：离线或流量达到 95% 阈值会自动下线 DNS 解析。</div>
         </div>
 

@@ -16,6 +16,18 @@ function get_conf(PDO $pdo, string $key): string
     return is_string($decoded) ? trim($decoded) : '';
 }
 
+function log_alert(PDO $pdo, array $node, string $type, string $value, string $msg): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM node_alerts WHERE node_id = ? AND type = ? AND created_at > DATE_SUB(NOW(), INTERVAL 30 MINUTE) LIMIT 1');
+    $stmt->execute([(int)$node['id'], $type]);
+    if ($stmt->fetch()) {
+        return;
+    }
+
+    $ins = $pdo->prepare('INSERT INTO node_alerts (node_id, node_name, type, value, message) VALUES (?, ?, ?, ?, ?)');
+    $ins->execute([(int)$node['id'], (string)$node['hostname'], $type, $value, $msg]);
+}
+
 function cf_request(string $method, string $url, array $headers, ?array $payload = null): array
 {
     $ch = curl_init($url);
@@ -71,17 +83,28 @@ foreach ($nodes as $node) {
     $usedBytes = (float)$node['traffic_used'];
     if ($limitBytes > 0 && $usedBytes > ($limitBytes * 0.95)) {
         fwrite(STDOUT, " - [{$name}] 流量耗尽 (跳过)\n");
+        log_alert($pdo, $node, 'Traffic', round($usedBytes / 1024 / 1024 / 1024, 2) . 'GB', '流量即将耗尽(>95%)');
         continue;
     }
 
-    $eligible[] = $node;
     $weight = max(0, min(100, (int)($node['weight'] ?? 100)));
+    $cpu = (float)($node['cpu_usage'] ?? 0);
+    $dynamicWeight = $weight;
+    if ($cpu > 95) {
+        $dynamicWeight = 0;
+        log_alert($pdo, $node, 'CPU', $cpu . '%', 'CPU超载，触发强制熔断');
+    } elseif ($cpu > 80) {
+        $dynamicWeight = max(0, (int)floor($weight * 0.5));
+        log_alert($pdo, $node, 'CPU', $cpu . '%', 'CPU高负载，权重降低');
+    }
+
+    $eligible[] = array_merge($node, ['dynamic_weight' => $dynamicWeight]);
     $rand = random_int(1, 100);
-    if ($weight >= $rand) {
+    if ($dynamicWeight >= $rand) {
         $targetIPs[] = $ip;
-        fwrite(STDOUT, " - [{$name}] 权重 {$weight} (随机 {$rand}) -> 入选 ✅\n");
+        fwrite(STDOUT, " - [{$name}] 权重 {$dynamicWeight} (随机 {$rand}) -> 入选 ✅\n");
     } else {
-        fwrite(STDOUT, " - [{$name}] 权重 {$weight} (随机 {$rand}) -> 轮空 ⏸️\n");
+        fwrite(STDOUT, " - [{$name}] 权重 {$dynamicWeight} (随机 {$rand}) -> 轮空 ⏸️\n");
     }
 }
 
@@ -90,9 +113,9 @@ if (empty($targetIPs)) {
     $best = null;
     $bestWeight = -1;
     foreach ($eligible as $node) {
-        $weight = max(0, min(100, (int)($node['weight'] ?? 100)));
-        if ($weight > $bestWeight) {
-            $bestWeight = $weight;
+        $dw = (int)$node['dynamic_weight'];
+        if ($dw > $bestWeight) {
+            $bestWeight = $dw;
             $best = $node;
         }
     }
