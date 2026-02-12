@@ -1,12 +1,10 @@
 <?php
 /**
- * admin.php - 旗舰版 V4.0 (完整功能版)
+ * admin.php - 旗舰版 V4.2 (PRG修复 + API路径修正)
  * * 变更日志：
- * 1. [恢复] 系统设置 Tab (修改账号/密码/Slug)。
- * 2. [恢复] 安全入口隐藏逻辑 (非 Slug 访问报 404)。
- * 3. [恢复] 右上角安全退出按钮。
- * 4. [优化] 告警中心内嵌显示，不再跳转外部文件。
- * 5. [保留] V3.0 的仪表盘图表与独立 IP 池管理。
+ * 1. [修复] 节点安装命令中 master URL 缺少 /api 后缀导致 404 的问题。
+ * 2. [优化] 增加 Post/Redirect/Get 逻辑，防止刷新页面时重复提交表单数据。
+ * 3. [保留] V4.1 的所有功能（UI说明、系统设置等）。
  */
 
 session_start();
@@ -76,9 +74,17 @@ if (!isset($_SESSION['is_admin'])) {
 $message = '';
 $active_tab = $_REQUEST['tab'] ?? 'nodes';
 
+// [优化] 检查 Session 中是否有重定向传来的消息 (PRG模式)
+if (isset($_SESSION['flash_msg'])) {
+    $message = $_SESSION['flash_msg'];
+    unset($_SESSION['flash_msg']);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     if(isset($_POST['tab'])) $active_tab = $_POST['tab'];
+
+    $temp_message = ''; // 临时存储消息
 
     try {
         // --- 域名管理 ---
@@ -86,28 +92,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $domain = trim($_POST['domain']);
             if ($domain) {
                 $pdo->prepare("INSERT INTO domains (domain) VALUES (?)")->execute([$domain]);
-                $message = "<div class='alert alert-success'>域名 $domain 添加成功</div>";
+                $temp_message = "<div class='alert alert-success'>域名 $domain 添加成功</div>";
             }
         }
         elseif ($action === 'del_domain') {
             $pdo->prepare("DELETE FROM domains WHERE id=?")->execute([$_POST['id']]);
-            $message = "<div class='alert alert-success'>域名已删除</div>";
+            $temp_message = "<div class='alert alert-success'>域名已删除</div>";
         }
         
         // --- 节点管理 ---
         elseif ($action === 'add_node') {
             $name = $_POST['hostname']; $ip = $_POST['ip']; $secret = bin2hex(random_bytes(16));
             $pdo->prepare("INSERT INTO nodes (hostname, ip_address, secret_key) VALUES (?, ?, ?)")->execute([$name, $ip, $secret]);
-            $message = "<div class='alert alert-success'>节点添加成功</div>";
+            $temp_message = "<div class='alert alert-success'>节点添加成功</div>";
         }
         elseif ($action === 'del_node') {
             $pdo->prepare("DELETE FROM nodes WHERE id=?")->execute([$_POST['id']]);
+            // 删除操作不一定要提示，或者也可以加上提示
         }
         elseif ($action === 'update_node_config') {
             $id = intval($_POST['id']);
             $pdo->prepare("UPDATE nodes SET traffic_limit=?, weight=?, max_bandwidth=?, max_ram=? WHERE id=?")
                 ->execute([$_POST['traffic_limit'], $_POST['weight'], $_POST['max_bandwidth'], $_POST['max_ram'], $id]);
-            $message = "<div class='alert alert-success'>节点配置已保存</div>";
+            $temp_message = "<div class='alert alert-success'>节点配置已保存</div>";
         }
         
         // --- IP 池管理 ---
@@ -133,7 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmtDel = $pdo->prepare("DELETE FROM cf_ip_pool WHERE ip_address NOT IN ($placeholders)");
                 $stmtDel->execute($ips);
             }
-            $message = "<div class='alert alert-success'>IP 池已更新并同步</div>";
+            $temp_message = "<div class='alert alert-success'>IP 池已更新并同步</div>";
         }
         
         // --- DNS 配置 ---
@@ -144,7 +151,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES (?, ?)")->execute([$k, json_encode(trim($_POST[$k]))]);
                 }
             }
-            $message = "<div class='alert alert-success'>DNS API 配置已保存</div>";
+            $temp_message = "<div class='alert alert-success'>DNS API 配置已保存</div>";
         }
         
         // --- 证书管理 ---
@@ -153,15 +160,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $prov = ($mode=='auto' && get_setting($pdo,'dns_provider','')=='huaweicloud') ? 'huaweicloud' : 'cloudflare';
             $pdo->prepare("INSERT INTO certificates (domain, mode, provider, auto_renew, apply_status, status_msg) VALUES (?, ?, ?, ?, 'processing', '等待处理...')")
                 ->execute([$_POST['domain'], $mode, $prov, isset($_POST['auto_renew'])?1:0]);
-            $message = "<div class='alert alert-info'>申请已提交</div>";
+            $temp_message = "<div class='alert alert-info'>申请已提交</div>";
         }
         elseif ($action === 'del_cert') {
             $pdo->prepare("DELETE FROM certificates WHERE id=?")->execute([$_POST['id']]);
-            $message = "<div class='alert alert-success'>证书已删除</div>";
+            $temp_message = "<div class='alert alert-success'>证书已删除</div>";
         }
         elseif ($action === 'verify_manual_cert') {
             $pdo->prepare("UPDATE certificates SET apply_status='verifying', status_msg='等待验证...' WHERE id=?")->execute([$_POST['id']]);
-            $message = "<div class='alert alert-warning'>已提交验证请求</div>";
+            $temp_message = "<div class='alert alert-warning'>已提交验证请求</div>";
         }
         
         // --- 告警管理 ---
@@ -170,23 +177,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         elseif ($action === 'mark_all_read') {
             $pdo->query("UPDATE node_alerts SET is_read=1");
-            $message = "<div class='alert alert-success'>所有告警已标记为已读</div>";
+            $temp_message = "<div class='alert alert-success'>所有告警已标记为已读</div>";
         }
         
-        // --- 系统设置 (新增) ---
+        // --- 系统设置 ---
         elseif ($action === 'save_settings') {
             if(!empty($_POST['admin_user'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_user', ?)")->execute([json_encode($_POST['admin_user'])]);
             if(!empty($_POST['admin_pass'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_pass', ?)")->execute([json_encode($_POST['admin_pass'])]);
             if(!empty($_POST['admin_slug'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_slug', ?)")->execute([json_encode($_POST['admin_slug'])]);
             
-            $message = "<div class='alert alert-success'>系统设置已更新，下次登录请使用新凭据/入口</div>";
+            $temp_message = "<div class='alert alert-success'>系统设置已更新，下次登录请使用新凭据/入口</div>";
             // 刷新本地变量
             $CONF_USER = $_POST['admin_user']; $CONF_PASS = $_POST['admin_pass']; $CONF_SLUG = $_POST['admin_slug'];
         }
 
     } catch (Exception $e) {
-        $message = "<div class='alert alert-danger'>操作失败: " . $e->getMessage() . "</div>";
+        $temp_message = "<div class='alert alert-danger'>操作失败: " . $e->getMessage() . "</div>";
     }
+
+    // [优化] PRG 模式：保存消息并重定向
+    // 构建跳转 URL，保留slug和当前的tab
+    if (!empty($temp_message)) {
+        $_SESSION['flash_msg'] = $temp_message;
+    }
+    $redirect_url = strtok($_SERVER['REQUEST_URI'], '?') . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab;
+    header("Location: " . $redirect_url);
+    exit; // 终止脚本执行，等待浏览器重定向
 }
 
 // ================= 4. 数据聚合查询 =================
@@ -291,7 +307,8 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                             $nodes = $pdo->query("SELECT * FROM nodes ORDER BY id DESC")->fetchAll();
                             foreach($nodes as $node):
                                 $is_online = (time()-$node['last_heartbeat'])<65;
-                                $cmd = "wget -O install_node.sh {$master_url}/install_node.sh && chmod +x install_node.sh && ./install_node.sh -master {$master_url} -secret {$node['secret_key']}";
+                                // [修复] 这里的命令中增加了 /api 路径
+                                $cmd = "wget -O install_node.sh {$master_url}/install_node.sh && chmod +x install_node.sh && ./install_node.sh -master {$master_url}/api -secret {$node['secret_key']}";
                             ?>
                             <tr>
                                 <td>
@@ -316,9 +333,24 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                                         <input type="hidden" name="tab" value="nodes">
                                         <input type="hidden" name="action" value="update_node_config">
                                         <input type="hidden" name="id" value="<?= $node['id'] ?>">
-                                        <div class="col-4" title="调度权重"><input type="number" name="weight" value="<?= $node['weight'] ?>" class="form-control form-control-sm" placeholder="权重"></div>
-                                        <div class="col-4" title="带宽限制"><input type="number" name="max_bandwidth" value="<?= $node['max_bandwidth'] ?>" class="form-control form-control-sm" placeholder="限速"></div>
-                                        <div class="col-4" title="内存限制"><input type="number" name="max_ram" value="<?= $node['max_ram'] ?>" class="form-control form-control-sm" placeholder="内存"></div>
+                                        <div class="col-4">
+                                            <div class="input-group input-group-sm" title="调度权重 (0-100)">
+                                                <span class="input-group-text px-1">权重</span>
+                                                <input type="number" name="weight" value="<?= $node['weight'] ?>" class="form-control px-1 text-center" placeholder="0-100">
+                                            </div>
+                                        </div>
+                                        <div class="col-4">
+                                            <div class="input-group input-group-sm" title="带宽熔断阈值 (Mbps)">
+                                                <span class="input-group-text px-1">限速</span>
+                                                <input type="number" name="max_bandwidth" value="<?= $node['max_bandwidth'] ?>" class="form-control px-1 text-center" placeholder="Mbps">
+                                            </div>
+                                        </div>
+                                        <div class="col-4">
+                                            <div class="input-group input-group-sm" title="内存保护阈值 (MB)">
+                                                <span class="input-group-text px-1">内存</span>
+                                                <input type="number" name="max_ram" value="<?= $node['max_ram'] ?>" class="form-control px-1 text-center" placeholder="MB">
+                                            </div>
+                                        </div>
                                         <div class="col-12 mt-1"><button class="btn btn-sm btn-outline-secondary w-100" style="--bs-btn-padding-y: .25rem;">保存配置</button></div>
                                     </form>
                                 </td>
