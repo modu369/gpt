@@ -127,6 +127,8 @@ systemctl restart nginx
 ### 主控端准备 acme.sh
 
 ```bash
+apt install -y cron socat
+systemctl enable --now cron
 curl https://get.acme.sh | sh
 mkdir -p /var/www/html/cf-master/cert_data
 chown -R www-data:www-data /var/www/html/cf-master/cert_data

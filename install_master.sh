@@ -21,7 +21,10 @@ fi
 echo -e "${GREEN}1/7 安装基础环境...${PLAIN}"
 export DEBIAN_FRONTEND=noninteractive
 apt update -y
-apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip curl ca-certificates openssl
+apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip curl ca-certificates openssl cron socat
+
+# acme.sh 依赖 cron 定时任务；最小化系统中通常默认未启用
+systemctl enable --now cron >/dev/null 2>&1 || true
 
 echo -e "${GREEN}2/7 配置数据库...${PLAIN}"
 DB_PASS="$(openssl rand -base64 18 | tr -d '\n')"
@@ -102,7 +105,21 @@ systemctl restart nginx
 echo -e "${GREEN}5/7 安装 acme.sh 并初始化无邮箱 Let\'s Encrypt 账号...${PLAIN}"
 curl https://get.acme.sh | sh
 mkdir -p "${WEB_ROOT}/acme_tool" "${WEB_ROOT}/cert_data"
-cp -a /root/.acme.sh/. "${WEB_ROOT}/acme_tool/"
+
+if [[ -d /root/.acme.sh ]]; then
+  cp -a /root/.acme.sh/. "${WEB_ROOT}/acme_tool/"
+else
+  echo -e "${YELLOW}常规安装未生成 /root/.acme.sh，改用源码安装兜底...${PLAIN}"
+  rm -rf /tmp/acme_install
+  git clone https://github.com/acmesh-official/acme.sh.git /tmp/acme_install
+  (cd /tmp/acme_install && ./acme.sh --install --force)
+  if [[ ! -d /root/.acme.sh ]]; then
+    echo -e "${RED}acme.sh 安装失败，请检查网络/系统环境。${PLAIN}"
+    exit 1
+  fi
+  cp -a /root/.acme.sh/. "${WEB_ROOT}/acme_tool/"
+fi
+
 chown -R www-data:www-data "${WEB_ROOT}"
 chmod +x "${WEB_ROOT}/acme_tool/acme.sh"
 
