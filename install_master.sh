@@ -47,8 +47,8 @@ systemctl enable --now mariadb >/dev/null 2>&1 || true
 echo -e "${GREEN}2/8 配置数据库...${PLAIN}"
 wait_for_db
 
-# 生成纯字母+数字的 16 位随机密码，避免特殊字符在 shell/mysql 中被误解析
-DB_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
+# 生成 16 位随机密码（避免 pipefail 下 tr|head 的 SIGPIPE 误报）
+DB_PASS="$(openssl rand -hex 8)"
 DB_NAME="cf_proxy_master"
 DB_USER="cf_master"
 
