@@ -258,7 +258,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $limitGB = max(0, (int)postStr('traffic_limit'));
         $weight = max(0, min(100, (int)postStr('weight')));
         $maxBandwidth = max(0, (int)postStr('max_bandwidth'));
-        $pdo->prepare('UPDATE nodes SET traffic_limit = ?, weight = ?, max_bandwidth = ? WHERE id = ?')->execute([$limitGB, $weight, $maxBandwidth, $nodeID]);
+        $maxRAM = max(0, (int)postStr('max_ram'));
+        $pdo->prepare('UPDATE nodes SET traffic_limit = ?, weight = ?, max_bandwidth = ?, max_ram = ? WHERE id = ?')->execute([$limitGB, $weight, $maxBandwidth, $maxRAM, $nodeID]);
         $message = '<div class="alert alert-success">节点配置已更新。</div>';
     } elseif ($action === 'reset_traffic') {
         $nodeID = (int)postStr('id');
@@ -502,6 +503,11 @@ foreach ($certsList as $certRow) {
                                                 <div class="input-group input-group-sm">
                                                     <span class="input-group-text" style="width:70px">流量</span>
                                                     <input type="number" name="traffic_limit" value="<?= $limitGB ?>" class="form-control" placeholder="GB" min="0">
+                                                </div>
+
+                                                <div class="input-group input-group-sm">
+                                                    <span class="input-group-text" style="width:70px">内存MB</span>
+                                                    <input type="number" name="max_ram" value="<?= (int)($node['max_ram'] ?? 0) ?>" class="form-control" placeholder="MB" min="0">
                                                 </div>
 
                                                 <button class="btn btn-sm btn-outline-primary mt-1 w-100">保存配置</button>
