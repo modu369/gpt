@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS `nodes` (
   `ram_usage` float DEFAULT 0 COMMENT '内存占用率',
   `traffic_limit` int(11) DEFAULT 0 COMMENT '流量限制(GB)',
   `traffic_used` bigint(20) DEFAULT 0 COMMENT '已用流量(Bytes)',
+  `current_bandwidth` int(11) DEFAULT 0 COMMENT '当前实时带宽(Mbps)',
   `max_bandwidth` int(11) DEFAULT 0 COMMENT '最大带宽(Mbps)',
   `weight` int(11) DEFAULT 100 COMMENT '调度权重(0-100)',
   PRIMARY KEY (`id`),
@@ -61,8 +62,8 @@ CREATE TABLE IF NOT EXISTS `certificates` (
   UNIQUE KEY `domain` (`domain`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_used`, `max_bandwidth`, `weight`)
-VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0, 0, 0, 0, 100);
+INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_used`, `current_bandwidth`, `max_bandwidth`, `weight`)
+VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0, 0, 0, 0, 0, 100);
 
 INSERT IGNORE INTO `domains` (`id`, `domain`, `node_group_id`, `ssl_status`)
 VALUES (1, 'test.yourdomain.com', 0, 0), (2, 'api.client.com', 0, 0);

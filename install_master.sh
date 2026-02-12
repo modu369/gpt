@@ -73,7 +73,7 @@ if [[ -f "${WEB_ROOT}/sql/init.sql" ]]; then
 else
   echo -e "${YELLOW}警告：未找到 sql/init.sql，执行内置兜底建表。${PLAIN}"
   mysql "${DB_NAME}" -e "
-CREATE TABLE IF NOT EXISTS nodes (id int AUTO_INCREMENT PRIMARY KEY, hostname varchar(100), ip_address varchar(45), secret_key varchar(64) UNIQUE, status tinyint DEFAULT 1, last_heartbeat int DEFAULT 0, cpu_usage float DEFAULT 0, ram_usage float DEFAULT 0, traffic_limit int DEFAULT 0, traffic_used bigint DEFAULT 0, max_bandwidth int DEFAULT 0, weight int DEFAULT 100);
+CREATE TABLE IF NOT EXISTS nodes (id int AUTO_INCREMENT PRIMARY KEY, hostname varchar(100), ip_address varchar(45), secret_key varchar(64) UNIQUE, status tinyint DEFAULT 1, last_heartbeat int DEFAULT 0, cpu_usage float DEFAULT 0, ram_usage float DEFAULT 0, traffic_limit int DEFAULT 0, traffic_used bigint DEFAULT 0, current_bandwidth int DEFAULT 0, max_bandwidth int DEFAULT 0, weight int DEFAULT 100);
 CREATE TABLE IF NOT EXISTS domains (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, node_group_id int DEFAULT 0, ssl_status tinyint DEFAULT 0, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS settings (key_name varchar(50) PRIMARY KEY, value_json json);
 CREATE TABLE IF NOT EXISTS certificates (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, cert_body text, key_body text, expire_time int DEFAULT 0, status tinyint DEFAULT 0, dns_challenge varchar(255), created_at timestamp DEFAULT CURRENT_TIMESTAMP);
@@ -83,6 +83,8 @@ INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES ('104.16.123.96'),('172.64.80.
 INSERT IGNORE INTO settings (key_name, value_json) VALUES ('admin_user', '"admin"'), ('admin_pass', '"admin123"'), ('admin_slug', '"yun123"'), ('cf_ips', '["104.16.123.96"]'), ('dns_provider', '"cloudflare"'), ('cf_email', '""'), ('cf_key', '""'), ('cf_zone_id', '""'), ('cf_record_name', '"cdn"');
 "
 fi
+
+mysql "${DB_NAME}" -e "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS current_bandwidth int DEFAULT 0 COMMENT '当前实时带宽Mbps';"
 
 echo -e "${GREEN}4/8 配置 Nginx...${PLAIN}"
 PHP_SOCK="$(ls /run/php/php*-fpm.sock | head -n 1)"

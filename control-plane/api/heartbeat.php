@@ -25,22 +25,31 @@ $down = isset($input['traffic_down']) ? (int)$input['traffic_down'] : 0;
 $maxBW = isset($input['max_bw']) ? (int)$input['max_bw'] : 0;
 $trafficInc = max(0, $up) + max(0, $down);
 
-$sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ?, traffic_used = traffic_used + ?';
-$params = [time(), $cpu, $ram, $trafficInc];
-if ($maxBW > 0) {
-    $sql .= ', max_bandwidth = IF(max_bandwidth = 0, ?, max_bandwidth)';
-    $params[] = $maxBW;
-}
-$sql .= ' WHERE secret_key = ?';
-$params[] = $secret;
+$nodeStmt = $pdo->prepare('SELECT id, last_heartbeat FROM nodes WHERE secret_key = ? LIMIT 1');
+$nodeStmt->execute([$secret]);
+$node = $nodeStmt->fetch();
 
-$stmt = $pdo->prepare($sql);
-$stmt->execute($params);
-
-if ($stmt->rowCount() === 0) {
+if (!$node) {
     http_response_code(403);
     echo json_encode(['error' => 'Forbidden: Invalid Node Secret']);
     exit;
 }
 
-echo json_encode(['status' => 'pong']);
+$currentTime = time();
+$lastTime = (int)($node['last_heartbeat'] ?? 0);
+$timeDiff = max(1, $currentTime - $lastTime);
+$currentBandwidth = (int)round(($trafficInc * 8) / 1000 / 1000 / $timeDiff);
+
+$sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ?, traffic_used = traffic_used + ?, current_bandwidth = ?';
+$params = [$currentTime, $cpu, $ram, $trafficInc, $currentBandwidth];
+if ($maxBW > 0) {
+    $sql .= ', max_bandwidth = IF(max_bandwidth = 0, ?, max_bandwidth)';
+    $params[] = $maxBW;
+}
+$sql .= ' WHERE id = ?';
+$params[] = (int)$node['id'];
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+
+echo json_encode(['status' => 'pong', 'bw' => $currentBandwidth]);

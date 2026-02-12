@@ -98,6 +98,23 @@ foreach ($nodes as $node) {
         log_alert($pdo, $node, 'CPU', $cpu . '%', 'CPU高负载，权重降低');
     }
 
+    $maxBandwidth = (int)($node['max_bandwidth'] ?? 0);
+    $currentBandwidth = (int)($node['current_bandwidth'] ?? 0);
+    if ($maxBandwidth > 0) {
+        $bwUsagePct = ($currentBandwidth / $maxBandwidth) * 100;
+        if ($bwUsagePct > 95) {
+            $dynamicWeight = 0;
+            fwrite(STDOUT, " - [{$name}] 带宽跑满 ({$currentBandwidth}/{$maxBandwidth} Mbps) -> 强制熔断
+");
+            log_alert($pdo, $node, 'Bandwidth', round($bwUsagePct, 2) . '%', '带宽已跑满，暂停解析');
+        } elseif ($bwUsagePct > 80) {
+            $dynamicWeight = max(0, (int)floor($dynamicWeight * 0.3));
+            fwrite(STDOUT, " - [{$name}] 带宽拥堵 ({$currentBandwidth}/{$maxBandwidth} Mbps) -> 权重降低
+");
+            log_alert($pdo, $node, 'Bandwidth', round($bwUsagePct, 2) . '%', '带宽高负载，权重降低');
+        }
+    }
+
     $eligible[] = array_merge($node, ['dynamic_weight' => $dynamicWeight]);
     $rand = random_int(1, 100);
     if ($dynamicWeight >= $rand) {

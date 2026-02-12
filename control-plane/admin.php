@@ -245,7 +245,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nodeID = (int)postStr('id');
         $limitGB = max(0, (int)postStr('traffic_limit'));
         $weight = max(0, min(100, (int)postStr('weight')));
-        $pdo->prepare('UPDATE nodes SET traffic_limit = ?, weight = ? WHERE id = ?')->execute([$limitGB, $weight, $nodeID]);
+        $maxBandwidth = max(0, (int)postStr('max_bandwidth'));
+        $pdo->prepare('UPDATE nodes SET traffic_limit = ?, weight = ?, max_bandwidth = ? WHERE id = ?')->execute([$limitGB, $weight, $maxBandwidth, $nodeID]);
         $message = '<div class="alert alert-success">节点配置已更新。</div>';
     } elseif ($action === 'reset_traffic') {
         $nodeID = (int)postStr('id');
@@ -413,7 +414,106 @@ foreach ($certsList as $certRow) {
         <div class="tab-pane fade show active" id="tab-dashboard">
             <div class="row">
                 <div class="col-md-9">
-                    <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">节点列表（含流量限额）</h5><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addNodeModal">+ 新增</button></div><div class="card-body"><table class="table table-hover align-middle"><thead><tr><th>状态</th><th>名称/IP</th><th>负载</th><th>本月流量</th><th>限额+权重</th><th>最后心跳</th><th>操作</th></tr></thead><tbody><?php foreach ($nodes as $node): $isOnline = (time() - (int)$node['last_heartbeat']) < 30; $usedGB = round(((float)($node['traffic_used'] ?? 0)) / 1024 / 1024 / 1024, 2); $limitGB = (int)($node['traffic_limit'] ?? 0); $weight = (int)($node['weight'] ?? 100); $percent = $limitGB > 0 ? min(100, (int)round(($usedGB / $limitGB) * 100)) : 0; ?><tr><td><span class="status-dot <?= $isOnline ? 'bg-online' : 'bg-offline' ?>"></span></td><td><strong><?= htmlspecialchars((string)$node['hostname'], ENT_QUOTES, 'UTF-8') ?></strong><br><small><?= htmlspecialchars((string)$node['ip_address'], ENT_QUOTES, 'UTF-8') ?></small></td><td>CPU: <?= (float)$node['cpu_usage'] ?>%<br>RAM: <?= (float)$node['ram_usage'] ?>MB</td><td><div class="progress" style="height:6px;"><div class="progress-bar <?= $percent >= 95 ? 'bg-danger' : 'bg-success' ?>" style="width: <?= $percent ?>%"></div></div><small><?= $usedGB ?> GB / <?= $limitGB > 0 ? ($limitGB . ' GB') : '∞' ?></small></td><td><form method="post" class="d-flex gap-1 align-items-center"><input type="hidden" name="action" value="update_node_config"><input type="hidden" name="id" value="<?= (int)$node['id'] ?>"><div class="input-group input-group-sm" style="width:150px;"><span class="input-group-text">限额GB</span><input type="number" min="0" name="traffic_limit" class="form-control" value="<?= $limitGB ?>"></div><div class="input-group input-group-sm" style="width:120px;"><span class="input-group-text">权重</span><input type="number" min="0" max="100" name="weight" class="form-control" value="<?= $weight ?>"></div><button class="btn btn-sm btn-outline-secondary">💾</button></form></td><td><?= (int)$node['last_heartbeat'] ? date('H:i:s', (int)$node['last_heartbeat']) : '-' ?></td><td><form method="post" style="display:inline"><input type="hidden" name="action" value="reset_traffic"><input type="hidden" name="id" value="<?= (int)$node['id'] ?>"><button class="btn btn-sm btn-link text-warning">清零</button></form><form method="post" onsubmit="return confirm('确定删除此节点？');" style="display:inline"><input type="hidden" name="action" value="del_node"><input type="hidden" name="id" value="<?= (int)$node['id'] ?>"><button class="btn btn-sm btn-link text-danger">删除</button></form></td></tr><?php endforeach; ?></tbody></table></div></div>
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">节点列表（含流量限额）</h5>
+                            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addNodeModal">+ 新增</button>
+                        </div>
+                        <div class="card-body">
+                            <table class="table table-hover align-middle">
+                                <thead>
+                                <tr>
+                                    <th>状态</th>
+                                    <th>节点信息</th>
+                                    <th>负载监控 (CPU / 带宽)</th>
+                                    <th>月流量 (GB)</th>
+                                    <th>配置 (权重 & 带宽)</th>
+                                    <th>最后心跳</th>
+                                    <th>操作</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach ($nodes as $node):
+                                    $isOnline = (time() - (int)$node['last_heartbeat']) < 30;
+                                    $usedGB = round(((float)($node['traffic_used'] ?? 0)) / 1024 / 1024 / 1024, 2);
+                                    $limitGB = (int)($node['traffic_limit'] ?? 0);
+                                    $weight = (int)($node['weight'] ?? 100);
+                                    $trafficPct = $limitGB > 0 ? min(100, (int)round(($usedGB / $limitGB) * 100)) : 0;
+
+                                    $curBW = (int)($node['current_bandwidth'] ?? 0);
+                                    $maxBW = (int)($node['max_bandwidth'] ?? 0);
+                                    $displayMax = $maxBW > 0 ? $maxBW : 1000;
+                                    $bwPct = (int)round(($curBW / $displayMax) * 100);
+                                    if ($bwPct > 100) {
+                                        $bwPct = 100;
+                                    }
+                                    $bwColor = $bwPct > 80 ? 'bg-danger' : 'bg-primary';
+                                ?>
+                                    <tr>
+                                        <td><span class="status-dot <?= $isOnline ? 'bg-online' : 'bg-offline' ?>"></span></td>
+                                        <td>
+                                            <strong><?= htmlspecialchars((string)$node['hostname'], ENT_QUOTES, 'UTF-8') ?></strong><br>
+                                            <small class="text-muted"><?= htmlspecialchars((string)$node['ip_address'], ENT_QUOTES, 'UTF-8') ?></small>
+                                        </td>
+                                        <td>
+                                            <small>CPU: <?= (float)$node['cpu_usage'] ?>%</small>
+                                            <div class="progress" style="height: 4px; width: 120px; margin-bottom: 5px;">
+                                                <div class="progress-bar bg-info" style="width: <?= max(0, min(100, (int)round((float)$node['cpu_usage']))) ?>%"></div>
+                                            </div>
+
+                                            <small>带宽: <?= $curBW ?> / <?= $maxBW > 0 ? $maxBW : '∞' ?> Mbps</small>
+                                            <div class="progress" style="height: 4px; width: 120px;">
+                                                <div class="progress-bar <?= $bwColor ?>" style="width: <?= $bwPct ?>%"></div>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <small><?= $usedGB ?> / <?= $limitGB === 0 ? '∞' : $limitGB ?> GB</small>
+                                            <div class="progress" style="height: 4px; width: 100px;">
+                                                <div class="progress-bar <?= $trafficPct > 90 ? 'bg-danger' : 'bg-success' ?>" style="width: <?= $trafficPct ?>%"></div>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <form method="post" class="d-flex flex-column gap-1" style="min-width: 200px;">
+                                                <input type="hidden" name="action" value="update_node_config">
+                                                <input type="hidden" name="id" value="<?= (int)$node['id'] ?>">
+
+                                                <div class="input-group input-group-sm">
+                                                    <span class="input-group-text" style="width:70px">权重</span>
+                                                    <input type="number" name="weight" value="<?= $weight ?>" class="form-control" min="0" max="100">
+                                                </div>
+
+                                                <div class="input-group input-group-sm">
+                                                    <span class="input-group-text" style="width:70px">限速</span>
+                                                    <input type="number" name="max_bandwidth" value="<?= $maxBW ?>" class="form-control" placeholder="Mbps" min="0">
+                                                </div>
+
+                                                <div class="input-group input-group-sm">
+                                                    <span class="input-group-text" style="width:70px">流量</span>
+                                                    <input type="number" name="traffic_limit" value="<?= $limitGB ?>" class="form-control" placeholder="GB" min="0">
+                                                </div>
+
+                                                <button class="btn btn-sm btn-outline-primary mt-1 w-100">保存配置</button>
+                                            </form>
+                                        </td>
+                                        <td><?= (int)$node['last_heartbeat'] ? date('H:i:s', (int)$node['last_heartbeat']) : '-' ?></td>
+                                        <td>
+                                            <form method="post" style="display:inline">
+                                                <input type="hidden" name="action" value="reset_traffic">
+                                                <input type="hidden" name="id" value="<?= (int)$node['id'] ?>">
+                                                <button class="btn btn-sm btn-link text-warning">清零</button>
+                                            </form>
+                                            <form method="post" onsubmit="return confirm('确定删除此节点？');" style="display:inline">
+                                                <input type="hidden" name="action" value="del_node">
+                                                <input type="hidden" name="id" value="<?= (int)$node['id'] ?>">
+                                                <button class="btn btn-sm btn-link text-danger">删除</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
                 <div class="col-md-3">
                     <div class="card"><div class="card-header">CF 优选 IP</div><div class="card-body"><form method="post"><input type="hidden" name="action" value="update_ips"><textarea name="cf_ips" class="form-control mb-2" rows="6"><?= htmlspecialchars(implode("
