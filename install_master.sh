@@ -13,6 +13,23 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 PLAIN='\033[0m'
 
+trap 'echo -e "${RED}❌ 错误：脚本执行失败，请检查上方报错信息。${PLAIN}"' ERR
+
+wait_for_db() {
+  echo "正在等待数据库服务初始化..."
+  local i
+  for i in {1..30}; do
+    if mysqladmin ping --silent >/dev/null 2>&1; then
+      echo "数据库已就绪。"
+      return 0
+    fi
+    echo "等待数据库启动 (${i}/30)..."
+    sleep 2
+  done
+  echo -e "${RED}数据库在超时时间内未就绪，请检查 mariadb 服务状态。${PLAIN}"
+  return 1
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo -e "${RED}错误：必须使用 root 用户运行此脚本！${PLAIN}"
   exit 1
@@ -25,8 +42,11 @@ apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip
 
 # acme.sh 依赖 cron 定时任务；最小化系统中通常默认未启用
 systemctl enable --now cron >/dev/null 2>&1 || true
+systemctl enable --now mariadb >/dev/null 2>&1 || true
 
 echo -e "${GREEN}2/8 配置数据库...${PLAIN}"
+wait_for_db
+
 # 生成纯字母+数字的 16 位随机密码，避免特殊字符在 shell/mysql 中被误解析
 DB_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
 DB_NAME="cf_proxy_master"
@@ -108,7 +128,7 @@ systemctl restart php*-fpm >/dev/null 2>&1 || true
 systemctl restart nginx
 
 echo -e "${GREEN}5/8 配置自动 DNS 调度任务...${PLAIN}"
-(crontab -l 2>/dev/null | grep -v "cron_dns.php" || true) | crontab -
+(crontab -l 2>/dev/null | grep -v "cron_dns.php" | grep -v "monitor_cf.php" || true) | crontab -
 (crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_dns.php >> /var/log/cf-dns.log 2>&1"; echo "* * * * * /usr/bin/php ${WEB_ROOT}/monitor_cf.php >> /var/log/cf-monitor.log 2>&1") | crontab -
 
 echo -e "${GREEN}6/8 安装 acme.sh 并初始化无邮箱 Let\'s Encrypt 账号...${PLAIN}"
