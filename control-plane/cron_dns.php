@@ -4,21 +4,16 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 
-function get_conf(PDO $pdo, string $key, string $default = ''): string
+function get_conf(PDO $pdo, string $key): string
 {
     $stmt = $pdo->prepare('SELECT value_json FROM settings WHERE key_name = ? LIMIT 1');
     $stmt->execute([$key]);
-    $val = $stmt->fetchColumn();
-    if ($val === false || $val === null) {
-        return $default;
+    $value = $stmt->fetchColumn();
+    if ($value === false || $value === null) {
+        return '';
     }
-
-    $decoded = json_decode((string)$val, true);
-    if (!is_string($decoded)) {
-        return $default;
-    }
-
-    return trim($decoded);
+    $decoded = json_decode((string)$value, true);
+    return is_string($decoded) ? trim($decoded) : '';
 }
 
 function cf_request(string $method, string $url, array $headers, ?array $payload = null): array
@@ -47,54 +42,71 @@ function cf_request(string $method, string $url, array $headers, ?array $payload
     return $decoded;
 }
 
-$dnsProvider = get_conf($pdo, 'dns_provider', 'cloudflare');
-if ($dnsProvider !== 'cloudflare') {
-    fwrite(STDOUT, "[" . date('Y-m-d H:i:s') . "] 当前仅支持 cloudflare，已跳过。\n");
-    exit(0);
-}
-
 $cfEmail = get_conf($pdo, 'cf_email');
 $cfKey = get_conf($pdo, 'cf_key');
 $cfZone = get_conf($pdo, 'cf_zone_id');
-$cfRecord = get_conf($pdo, 'cf_record_name');
-if ($cfEmail === '' || $cfKey === '' || $cfZone === '' || $cfRecord === '') {
-    fwrite(STDOUT, "Cloudflare 配置不完整，请在后台保存后再运行。\n");
+$cfName = get_conf($pdo, 'cf_record_name');
+
+if ($cfEmail === '' || $cfKey === '' || $cfZone === '' || $cfName === '') {
+    fwrite(STDOUT, "Cloudflare 配置不完整，跳过。\n");
     exit(0);
 }
 
-$nodes = $pdo->query('SELECT * FROM nodes WHERE status = 1')->fetchAll();
-$healthyIPs = [];
+$nodes = $pdo->query('SELECT * FROM nodes WHERE status = 1 ORDER BY id ASC')->fetchAll();
+$targetIPs = [];
+$eligible = [];
 
-fwrite(STDOUT, '[' . date('Y-m-d H:i:s') . "] 开始调度检查...\n");
+fwrite(STDOUT, '[' . date('Y-m-d H:i:s') . "] 开始智能调度...\n");
+
 foreach ($nodes as $node) {
     $name = (string)$node['hostname'];
     $ip = (string)$node['ip_address'];
-    $lastHeartbeat = (int)($node['last_heartbeat'] ?? 0);
-    if (time() - $lastHeartbeat > 60) {
-        fwrite(STDOUT, " - 节点 {$name} ({$ip}) 离线\n");
+
+    if (time() - (int)$node['last_heartbeat'] > 60) {
+        fwrite(STDOUT, " - [{$name}] 离线 (跳过)\n");
         continue;
     }
 
-    $limitGB = (int)($node['traffic_limit'] ?? 0);
-    $usedBytes = (float)($node['traffic_used'] ?? 0);
-    if ($limitGB > 0) {
-        $limitBytes = $limitGB * 1024 * 1024 * 1024;
-        $threshold = $limitBytes * 0.95;
-        if ($usedBytes > $threshold) {
-            fwrite(STDOUT, " - 节点 {$name} ({$ip}) 流量已达95%，暂停解析\n");
-            continue;
+    $limitBytes = (int)$node['traffic_limit'] * 1024 * 1024 * 1024;
+    $usedBytes = (float)$node['traffic_used'];
+    if ($limitBytes > 0 && $usedBytes > ($limitBytes * 0.95)) {
+        fwrite(STDOUT, " - [{$name}] 流量耗尽 (跳过)\n");
+        continue;
+    }
+
+    $eligible[] = $node;
+    $weight = max(0, min(100, (int)($node['weight'] ?? 100)));
+    $rand = random_int(1, 100);
+    if ($weight >= $rand) {
+        $targetIPs[] = $ip;
+        fwrite(STDOUT, " - [{$name}] 权重 {$weight} (随机 {$rand}) -> 入选 ✅\n");
+    } else {
+        fwrite(STDOUT, " - [{$name}] 权重 {$weight} (随机 {$rand}) -> 轮空 ⏸️\n");
+    }
+}
+
+if (empty($targetIPs)) {
+    fwrite(STDOUT, "⚠️ 随机算法导致空池，启动兜底...\n");
+    $best = null;
+    $bestWeight = -1;
+    foreach ($eligible as $node) {
+        $weight = max(0, min(100, (int)($node['weight'] ?? 100)));
+        if ($weight > $bestWeight) {
+            $bestWeight = $weight;
+            $best = $node;
         }
     }
 
-    $healthyIPs[] = $ip;
+    if ($best !== null) {
+        $targetIPs[] = (string)$best['ip_address'];
+        fwrite(STDOUT, ' -> 兜底选中: ' . (string)$best['hostname'] . "\n");
+    } else {
+        fwrite(STDOUT, "❌ 没有在线可用节点，停止更新 DNS。\n");
+        exit(0);
+    }
 }
 
-$healthyIPs = array_values(array_unique(array_filter($healthyIPs)));
-fwrite(STDOUT, '当前健康 IP 池: ' . implode(', ', $healthyIPs) . "\n");
-if (empty($healthyIPs)) {
-    fwrite(STDOUT, "警告：没有可用节点，已跳过 DNS 更新。\n");
-    exit(0);
-}
+$targetIPs = array_values(array_unique($targetIPs));
 
 $headers = [
     'X-Auth-Email: ' . $cfEmail,
@@ -102,42 +114,35 @@ $headers = [
     'Content-Type: application/json',
 ];
 
-$recordName = $cfRecord;
 try {
-    $queryURL = sprintf(
-        'https://api.cloudflare.com/client/v4/zones/%s/dns_records?type=A&name=%s',
-        rawurlencode($cfZone),
-        rawurlencode($recordName)
-    );
+    $queryURL = sprintf('https://api.cloudflare.com/client/v4/zones/%s/dns_records?type=A&name=%s', rawurlencode($cfZone), rawurlencode($cfName));
     $resp = cf_request('GET', $queryURL, $headers);
     if (empty($resp['success'])) {
-        throw new RuntimeException('CF API 获取记录失败: ' . json_encode($resp['errors'] ?? [], JSON_UNESCAPED_UNICODE));
+        throw new RuntimeException('CF API Error: ' . json_encode($resp['errors'] ?? [], JSON_UNESCAPED_UNICODE));
     }
 
-    $currentRecords = [];
-    foreach (($resp['result'] ?? []) as $row) {
-        if (!isset($row['content'], $row['id'])) {
+    $current = [];
+    foreach (($resp['result'] ?? []) as $record) {
+        if (!isset($record['content'], $record['id'])) {
             continue;
         }
-        $currentRecords[(string)$row['content']] = (string)$row['id'];
+        $current[(string)$record['content']] = (string)$record['id'];
     }
 
-    $toAdd = array_diff($healthyIPs, array_keys($currentRecords));
-    $toDelete = array_diff(array_keys($currentRecords), $healthyIPs);
+    $toAdd = array_diff($targetIPs, array_keys($current));
+    $toDel = array_diff(array_keys($current), $targetIPs);
 
-    foreach ($toDelete as $ip) {
-        $id = $currentRecords[$ip];
-        fwrite(STDOUT, " -> 删除 DNS IP: {$ip}\n");
-        $delURL = sprintf('https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s', rawurlencode($cfZone), rawurlencode($id));
-        cf_request('DELETE', $delURL, $headers);
+    foreach ($toDel as $ip) {
+        fwrite(STDOUT, " -> DNS 删除: {$ip}\n");
+        $id = $current[$ip];
+        cf_request('DELETE', sprintf('https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s', rawurlencode($cfZone), rawurlencode($id)), $headers);
     }
 
     foreach ($toAdd as $ip) {
-        fwrite(STDOUT, " -> 添加 DNS IP: {$ip}\n");
-        $addURL = sprintf('https://api.cloudflare.com/client/v4/zones/%s/dns_records', rawurlencode($cfZone));
-        cf_request('POST', $addURL, $headers, [
+        fwrite(STDOUT, " -> DNS 添加: {$ip}\n");
+        cf_request('POST', sprintf('https://api.cloudflare.com/client/v4/zones/%s/dns_records', rawurlencode($cfZone)), $headers, [
             'type' => 'A',
-            'name' => $recordName,
+            'name' => $cfName,
             'content' => $ip,
             'ttl' => 60,
             'proxied' => false,

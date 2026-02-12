@@ -191,3 +191,10 @@ bash install_node.sh --uninstall
 ```cron
 * * * * * /usr/bin/php /var/www/html/cf-master/monitor_cf.php >> /var/log/cf-monitor.log 2>&1
 ```
+
+## 权重模拟调度（Cloudflare 免费版）
+
+`control-plane/cron_dns.php` 已支持时间切片概率调度：
+- 节点 `weight` 范围 `0-100`（100 表示每次调度都入选，50 表示约 50% 轮次入选）。
+- 调度前仍会进行在线与流量阈值检查（离线或 >95% 自动跳过）。
+- 若随机导致空池，会自动兜底选择权重最高且健康的节点，避免 DNS 空池断流。
