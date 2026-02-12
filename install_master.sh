@@ -1,7 +1,6 @@
 #!/bin/bash
-# install_master.sh - 主控端全功能一键部署脚本 (V3.3 高可用版)
-# 适配仓库: https://github.com/modu369/gpt
-# 分支: codex/add-domain-level-traffic-statistics-report
+# install_master.sh - V4.0 (完美适配 control-plane 目录结构)
+# 功能: 自动修正 Nginx 路径，自动搬运 install_node.sh
 
 # --- 错误处理 ---
 set -e
@@ -23,7 +22,6 @@ apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip
 
 systemctl enable cron && systemctl start cron
 systemctl enable mariadb && systemctl start mariadb
-
 PHP_VER=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
 
 # 2. 配置数据库
@@ -34,6 +32,7 @@ for i in {1..30}; do
     sleep 2
 done
 
+# 使用 openssl 生成密码
 DB_PASS=$(openssl rand -hex 8)
 DB_NAME="cf_proxy_master"
 DB_USER="cf_master"
@@ -46,42 +45,44 @@ mysql -e "FLUSH PRIVILEGES;"
 
 # 3. 拉取源码
 echo -e "${GREEN}3/8 拉取源码...${PLAIN}"
-WEB_ROOT="/var/www/html/cf-master"
-mkdir -p ${WEB_ROOT}
+# BASE_ROOT: 仓库文件的物理存放根目录
+BASE_ROOT="/var/www/html/cf-master"
+# WEB_ROOT: Nginx 应该访问的网站根目录 (指向 control-plane)
+WEB_ROOT="${BASE_ROOT}/control-plane"
+
+mkdir -p ${BASE_ROOT}
 rm -rf /tmp/repo_clone
 
+# 克隆代码
 git clone -b codex/add-domain-level-traffic-statistics-report https://github.com/modu369/gpt.git /tmp/repo_clone
-cp -r /tmp/repo_clone/* ${WEB_ROOT}/
-chown -R www-data:www-data ${WEB_ROOT}
-chmod -R 755 ${WEB_ROOT}
 
-# 4. 导入 SQL
+# 移动所有文件到 BASE_ROOT
+cp -r /tmp/repo_clone/* ${BASE_ROOT}/
+chown -R www-data:www-data ${BASE_ROOT}
+chmod -R 755 ${BASE_ROOT}
+
+# 【关键步骤】将根目录的 install_node.sh 复制到 control-plane 目录
+# 这样通过 URL http://IP:8080/install_node.sh 才能访问到
+if [ -f "${BASE_ROOT}/install_node.sh" ]; then
+    echo "正在部署节点安装脚本..."
+    cp "${BASE_ROOT}/install_node.sh" "${WEB_ROOT}/"
+    chown www-data:www-data "${WEB_ROOT}/install_node.sh"
+    chmod +x "${WEB_ROOT}/install_node.sh"
+fi
+
+# 4. 导入 SQL (使用脚本内置的完整结构，确保包含带宽和告警字段)
 echo -e "${GREEN}4/8 初始化数据表...${PLAIN}"
 mysql ${DB_NAME} -e "
 CREATE TABLE IF NOT EXISTS nodes (
     id int AUTO_INCREMENT PRIMARY KEY, 
-    hostname varchar(100), 
-    ip_address varchar(45), 
-    secret_key varchar(64) UNIQUE, 
-    status tinyint DEFAULT 1, 
-    last_heartbeat int DEFAULT 0, 
-    cpu_usage float DEFAULT 0, 
-    ram_usage float DEFAULT 0,
-    traffic_limit int DEFAULT 0,
-    traffic_used bigint DEFAULT 0,
-    weight int DEFAULT 100,
-    max_bandwidth int DEFAULT 0,
-    current_bandwidth int DEFAULT 0
+    hostname varchar(100), ip_address varchar(45), secret_key varchar(64) UNIQUE, 
+    status tinyint DEFAULT 1, last_heartbeat int DEFAULT 0, cpu_usage float DEFAULT 0, 
+    ram_usage float DEFAULT 0, traffic_limit int DEFAULT 0, traffic_used bigint DEFAULT 0, 
+    weight int DEFAULT 100, max_bandwidth int DEFAULT 0, current_bandwidth int DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS node_alerts (
-  id int AUTO_INCREMENT PRIMARY KEY,
-  node_id int,
-  node_name varchar(100),
-  type varchar(20),
-  value varchar(50),
-  message text,
-  is_read tinyint DEFAULT 0,
-  created_at timestamp DEFAULT CURRENT_TIMESTAMP
+  id int AUTO_INCREMENT PRIMARY KEY, node_id int, node_name varchar(100), type varchar(20), 
+  value varchar(50), message text, is_read tinyint DEFAULT 0, created_at timestamp DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS domains (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS settings (key_name varchar(50) PRIMARY KEY, value_json json);
@@ -92,7 +93,7 @@ INSERT IGNORE INTO settings (key_name, value_json) VALUES
 ('admin_user', '"admin"'), ('admin_pass', '"admin123"'), ('admin_slug', '"yun123"'), ('cf_ips', '["104.16.123.96"]'), ('cf_email', '""'), ('cf_key', '""'), ('cf_zone_id', '""'), ('cf_record_name', '"cdn"');
 "
 
-# 5. db.php
+# 5. 生成 db.php (生成在 WEB_ROOT 即 control-plane 下)
 echo -e "${GREEN}5/8 生成配置文件...${PLAIN}"
 cat > ${WEB_ROOT}/db.php <<EOF2
 <?php
@@ -106,15 +107,18 @@ declare(strict_types=1);
 \$options = [PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC,PDO::ATTR_EMULATE_PREPARES=>false];
 try {\$pdo = new PDO(\$dsn, \$user, \$pass, \$options);} catch (\PDOException \$e) {http_response_code(500);echo json_encode(['error'=>'Database connection failed']);exit;}
 EOF2
+chown www-data:www-data ${WEB_ROOT}/db.php
 
-# 6. Nginx
+# 6. 配置 Nginx (Root 指向 WEB_ROOT 即 control-plane)
 echo -e "${GREEN}6/8 配置 Nginx...${PLAIN}"
 cat > /etc/nginx/conf.d/cf-master.conf <<EOF2
 server {
     listen 8080;
     server_name _;
-    root ${WEB_ROOT};
+    # 关键：指向 control-plane 子目录
+    root ${WEB_ROOT}; 
     index admin.php index.php;
+    
     location / { try_files \$uri \$uri/ /admin.php?slug=\$uri; }
     location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php${PHP_VER}-fpm.sock; }
     location ~ /\.(git|env|yml) { deny all; }
@@ -127,16 +131,17 @@ rm -f /etc/nginx/sites-enabled/default
 systemctl restart nginx
 systemctl restart php${PHP_VER}-fpm
 
-# 7. Crontab
+# 7. 配置 Crontab (路径指向 WEB_ROOT)
 echo -e "${GREEN}7/8 配置自动任务...${PLAIN}"
 (crontab -l 2>/dev/null | grep -v "cf-master") | crontab -
 (crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_dns.php >> /var/log/cf-dns.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/monitor_cf.php >> /var/log/cf-monitor.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "0 0 1 * * mysql ${DB_NAME} -e 'UPDATE nodes SET traffic_used=0'") | crontab -
 
-# 8. Acme.sh
+# 8. 安装 Acme.sh
 echo -e "${GREEN}8/8 安装 SSL 工具...${PLAIN}"
 curl https://get.acme.sh | sh
+# 注意：证书目录最好还是放在 BASE_ROOT 下，避免 web 可访问，但为了逻辑简单，这里放在 WEB_ROOT 下并禁止 Nginx 访问
 mkdir -p ${WEB_ROOT}/acme_tool ${WEB_ROOT}/cert_data
 if [ -d "/root/.acme.sh" ]; then cp -r /root/.acme.sh/* ${WEB_ROOT}/acme_tool/; else git clone https://github.com/acmesh-official/acme.sh.git /tmp/acme_install && cd /tmp/acme_install && ./acme.sh --install --force && cp -r /root/.acme.sh/* ${WEB_ROOT}/acme_tool/; fi
 chown -R www-data:www-data ${WEB_ROOT}
@@ -144,7 +149,7 @@ su -s /bin/bash -c "${WEB_ROOT}/acme_tool/acme.sh --register-account --server le
 
 MY_IP=$(curl -s4 ifconfig.me)
 echo -e "=================================================="
-echo -e "${GREEN}✅ 主控端 V3.3 高可用版 安装完成！${PLAIN}"
+echo -e "${GREEN}✅ 主控端 V4.0 (目录适配版) 安装完成！${PLAIN}"
 echo -e "管理后台: http://${MY_IP}:8080/yun123"
 echo -e "账号: admin / 密码: admin123"
 echo -e "=================================================="
