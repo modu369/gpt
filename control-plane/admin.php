@@ -159,6 +159,7 @@ if (!isset($_SESSION['is_admin']) || $_SESSION['is_admin'] !== true) {
         <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
         <title>管理后台登录</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>body{background:#f0f2f5;display:flex;align-items:center;justify-content:center;height:100vh}.login-card{width:100%;max-width:400px;padding:2rem;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.1);background:#fff}</style>
     </head>
     <body>
@@ -292,6 +293,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nodeID = (int)postStr('id');
         $pdo->prepare('UPDATE nodes SET traffic_used = 0 WHERE id = ?')->execute([$nodeID]);
         $message = '<div class="alert alert-success">流量已清零。</div>';
+    } elseif ($action === 'update_node_bandwidth') {
+        $nodeID = (int)postStr('id');
+        $bandwidthMax = max(0, (int)postStr('bandwidth_max'));
+        $pdo->prepare('UPDATE nodes SET bandwidth_max = ? WHERE id = ?')->execute([$bandwidthMax, $nodeID]);
+        $message = '<div class="alert alert-success">节点带宽上限已更新。</div>';
     } elseif ($action === 'cert_apply') {
         $domain = postStr('domain');
         if ($domain === '') {
@@ -369,6 +375,31 @@ if (!is_array($cfIPs)) {
 }
 
 $alertHtml = '';
+$totalTrafficBytes = 0.0;
+$cpuTotal = 0.0;
+$ramTotal = 0.0;
+$onlineCount = 0;
+$nodeAlerts = [];
+foreach ($nodes as $nodeRow) {
+    $totalTrafficBytes += (float)($nodeRow['traffic_used'] ?? 0);
+    $cpu = (float)($nodeRow['cpu_usage'] ?? 0);
+    $ram = (float)($nodeRow['ram_usage'] ?? 0);
+    $cpuTotal += $cpu;
+    $ramTotal += $ram;
+    if ((time() - (int)($nodeRow['last_heartbeat'] ?? 0)) < 30) {
+        $onlineCount++;
+    }
+    if ($cpu >= 90) {
+        $nodeAlerts[] = '节点 ' . (string)$nodeRow['hostname'] . ' CPU 超载 (' . $cpu . '%)';
+    }
+    if ($ram >= 9000) {
+        $nodeAlerts[] = '节点 ' . (string)$nodeRow['hostname'] . ' 内存告急 (' . $ram . 'MB)';
+    }
+}
+$totalTrafficGB = round($totalTrafficBytes / 1024 / 1024 / 1024, 2);
+$avgCPU = count($nodes) > 0 ? round($cpuTotal / count($nodes), 2) : 0;
+$avgRAM = count($nodes) > 0 ? round($ramTotal / count($nodes), 2) : 0;
+
 foreach ($certsList as $certRow) {
     if ((int)$certRow['status'] === 1 && ((int)$certRow['expire_time'] - time()) < 5 * 86400) {
         $days = (int)ceil(((int)$certRow['expire_time'] - time()) / 86400);
@@ -382,6 +413,7 @@ foreach ($certsList as $certRow) {
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
     <title>系统管理 - <?= htmlspecialchars($CONF_SLUG, ENT_QUOTES, 'UTF-8') ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>.status-dot{height:10px;width:10px;border-radius:50%;display:inline-block}.bg-online{background:#198754;box-shadow:0 0 5px #198754}.bg-offline{background:#dc3545}.nav-link.active{background:#0d6efd!important;color:#fff!important}</style>
 </head>
 <body class="bg-light">
@@ -390,6 +422,16 @@ foreach ($certsList as $certRow) {
 <div class="container">
     <?= $message ?>
     <?= $alertHtml ?>
+
+    <?php if (!empty($nodeAlerts)): ?>
+        <div class="alert alert-danger"><strong>⚠️ 系统告警：</strong><br><?= nl2br(htmlspecialchars(implode("
+", $nodeAlerts), ENT_QUOTES, 'UTF-8')) ?></div>
+    <?php endif; ?>
+
+    <div class="row mb-4">
+        <div class="col-md-3"><div class="card"><div class="card-body text-center"><h6>总流量消耗</h6><h3><?= $totalTrafficGB ?> GB</h3></div></div></div>
+        <div class="col-md-9"><div class="card"><div class="card-body d-flex justify-content-around align-items-center"><div style="width:150px"><canvas id="cpuChart"></canvas></div><div style="width:150px"><canvas id="ramChart"></canvas></div><div><h5>集群健康度</h5><p class="text-muted mb-0">在线节点: <?= $onlineCount ?> / <?= count($nodes) ?></p></div></div></div></div>
+    </div>
 
     <ul class="nav nav-pills mb-4" role="tablist">
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-dashboard">📊 监控与节点</button></li>
@@ -423,6 +465,7 @@ foreach ($certsList as $certRow) {
 
         <div class="tab-pane fade" id="tab-dns">
             <div class="card"><div class="card-header">Cloudflare API 配置（自动调度使用）</div><div class="card-body"><form method="post"><input type="hidden" name="action" value="save_dns"><div class="mb-3"><label class="form-label">DNS Provider</label><select name="dns_provider" class="form-select"><option value="cloudflare" <?= $DNS_PROVIDER === 'cloudflare' ? 'selected' : '' ?>>Cloudflare</option></select></div><div class="mb-3"><label class="form-label">CF 邮箱</label><input type="text" name="cf_email" class="form-control" value="<?= htmlspecialchars($CF_EMAIL, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">CF Global API Key</label><input type="password" name="cf_key" class="form-control" value="<?= htmlspecialchars($CF_KEY, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">CF Zone ID</label><input type="text" name="cf_zone_id" class="form-control" value="<?= htmlspecialchars($CF_ZONE, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">调度记录名（例如 cdn）</label><input type="text" name="cf_record_name" class="form-control" value="<?= htmlspecialchars($CF_RECORD, ENT_QUOTES, 'UTF-8') ?>"></div><button class="btn btn-success">保存 DNS 配置</button></form></div></div>
+            <div class="card mt-3"><div class="card-header">带宽上限配置（Mbps）</div><div class="card-body"><table class="table table-sm"><thead><tr><th>节点</th><th>当前上限</th><th>操作</th></tr></thead><tbody><?php foreach ($nodes as $n): ?><tr><td><?= htmlspecialchars((string)$n['hostname'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int)($n['bandwidth_max'] ?? 0) ?></td><td><form method="post" class="d-flex gap-1"><input type="hidden" name="action" value="update_node_bandwidth"><input type="hidden" name="id" value="<?= (int)$n['id'] ?>"><input type="number" min="0" class="form-control form-control-sm" name="bandwidth_max" value="<?= (int)($n['bandwidth_max'] ?? 0) ?>" style="width:90px"><button class="btn btn-sm btn-outline-secondary">保存</button></form></td></tr><?php endforeach; ?></tbody></table></div></div>
             <div class="alert alert-info mt-3">系统可通过 <code>cron_dns.php</code> 每分钟同步健康节点：离线或流量达到 95% 阈值会自动下线 DNS 解析。</div>
         </div>
 
@@ -448,6 +491,18 @@ function copyCmd(id) {
     document.execCommand('copy');
     alert('命令已复制！');
 }
+</script>
+<script>
+new Chart(document.getElementById('cpuChart'), {
+    type: 'doughnut',
+    data: {labels: ['已用', '空闲'], datasets: [{data: [<?= $avgCPU ?>, <?= max(0, 100 - $avgCPU) ?>], backgroundColor: ['#dc3545', '#198754']}]},
+    options: {plugins: {title: {display: true, text: '平均 CPU'}}}
+});
+new Chart(document.getElementById('ramChart'), {
+    type: 'doughnut',
+    data: {labels: ['已用', '余量'], datasets: [{data: [<?= min(100, round($avgRAM / 100)) ?>, <?= max(0, 100 - min(100, round($avgRAM / 100))) ?>], backgroundColor: ['#fd7e14', '#0d6efd']}]},
+    options: {plugins: {title: {display: true, text: '平均 RAM(估算)'}}}
+});
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>

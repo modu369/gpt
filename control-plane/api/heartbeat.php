@@ -20,10 +20,13 @@ if (!is_array($input)) {
 
 $cpu = isset($input['cpu']) ? (float)$input['cpu'] : 0.0;
 $ram = isset($input['ram']) ? (float)$input['ram'] : 0.0;
+$up = isset($input['traffic_up']) ? (int)$input['traffic_up'] : 0;
+$down = isset($input['traffic_down']) ? (int)$input['traffic_down'] : 0;
+$trafficInc = max(0, $up) + max(0, $down);
 
-$sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ? WHERE secret_key = ?';
+$sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ?, traffic_used = traffic_used + ? WHERE secret_key = ?';
 $stmt = $pdo->prepare($sql);
-$stmt->execute([time(), $cpu, $ram, $secret]);
+$stmt->execute([time(), $cpu, $ram, $trafficInc, $secret]);
 
 if ($stmt->rowCount() === 0) {
     http_response_code(403);

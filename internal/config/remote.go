@@ -36,6 +36,14 @@ type RuntimeSnapshot struct {
 	Version   int64
 }
 
+type HeartbeatPayload struct {
+	CPU         float64 `json:"cpu"`
+	RAMMB       uint64  `json:"ram"`
+	Goroutines  int     `json:"goroutines"`
+	TrafficUp   uint64  `json:"traffic_up"`
+	TrafficDown uint64  `json:"traffic_down"`
+}
+
 type APIClient struct {
 	baseURL    string
 	secret     string
@@ -86,14 +94,17 @@ func (c *APIClient) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	return cfg, nil
 }
 
-func (c *APIClient) SendHeartbeat(ctx context.Context) error {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	payload := map[string]any{
-		"ram":        mem.Alloc / 1024 / 1024,
-		"goroutines": runtime.NumGoroutine(),
+func (c *APIClient) SendHeartbeat(ctx context.Context, hb HeartbeatPayload) error {
+	if hb.RAMMB == 0 {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		hb.RAMMB = mem.Alloc / 1024 / 1024
 	}
-	buf, err := json.Marshal(payload)
+	if hb.Goroutines == 0 {
+		hb.Goroutines = runtime.NumGoroutine()
+	}
+
+	buf, err := json.Marshal(hb)
 	if err != nil {
 		return err
 	}

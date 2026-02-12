@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -141,6 +142,7 @@ func main() {
 
 	snap := manager.Snapshot()
 	engine := proxy.New(manager)
+	engine.StartCFHealthCheck(context.Background(), 5*time.Second)
 	handler := engine.Handler()
 
 	httpSrv := &http.Server{Addr: proxy.HTTPAddr(snap.HTTPPort), Handler: handler}
@@ -152,8 +154,18 @@ func main() {
 		ticker := time.NewTicker(*heartbeatInterval)
 		defer ticker.Stop()
 		for range ticker.C {
+			up, down := engine.ConsumeTraffic()
+			var mem runtime.MemStats
+			runtime.ReadMemStats(&mem)
+
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-			if err := client.SendHeartbeat(ctx); err != nil {
+			if err := client.SendHeartbeat(ctx, config.HeartbeatPayload{
+				CPU:         0,
+				RAMMB:       mem.Alloc / 1024 / 1024,
+				Goroutines:  runtime.NumGoroutine(),
+				TrafficUp:   up,
+				TrafficDown: down,
+			}); err != nil {
 				log.Printf("[Heartbeat] failed: %v", err)
 			}
 			if err := refreshConfig(ctx, client, manager, store); err != nil {
