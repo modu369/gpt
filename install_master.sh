@@ -18,7 +18,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-echo -e "${GREEN}1/7 安装基础环境...${PLAIN}"
+echo -e "${GREEN}1/8 安装基础环境...${PLAIN}"
 export DEBIAN_FRONTEND=noninteractive
 apt update -y
 apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip curl ca-certificates openssl cron socat
@@ -26,7 +26,7 @@ apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip
 # acme.sh 依赖 cron 定时任务；最小化系统中通常默认未启用
 systemctl enable --now cron >/dev/null 2>&1 || true
 
-echo -e "${GREEN}2/7 配置数据库...${PLAIN}"
+echo -e "${GREEN}2/8 配置数据库...${PLAIN}"
 # 生成纯字母+数字的 16 位随机密码，避免特殊字符在 shell/mysql 中被误解析
 DB_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
 DB_NAME="cf_proxy_master"
@@ -38,7 +38,7 @@ mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
 mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
 mysql -e "FLUSH PRIVILEGES;"
 
-echo -e "${GREEN}3/7 拉取仓库并部署控制面...${PLAIN}"
+echo -e "${GREEN}3/8 拉取仓库并部署控制面...${PLAIN}"
 SRC_DIR="/opt/cf-master-src"
 WEB_ROOT="/var/www/html/cf-master"
 rm -rf "${SRC_DIR}"
@@ -61,7 +61,7 @@ INSERT IGNORE INTO settings (key_name, value_json) VALUES ('admin_user', '"admin
 "
 fi
 
-echo -e "${GREEN}4/7 配置 Nginx...${PLAIN}"
+echo -e "${GREEN}4/8 配置 Nginx...${PLAIN}"
 PHP_SOCK="$(ls /run/php/php*-fpm.sock | head -n 1)"
 if [[ -z "${PHP_SOCK}" ]]; then
   echo -e "${RED}未找到 PHP-FPM socket，请检查 php-fpm 是否安装成功。${PLAIN}"
@@ -93,7 +93,7 @@ server {
         deny all;
     }
 
-    location ~ /(db\.php|database\.sql|sql/init\.sql) {
+    location ~ /(db\.php|database\.sql|sql/init\.sql|cron_dns\.php) {
         deny all;
     }
 }
@@ -104,7 +104,11 @@ systemctl enable --now php*-fpm mariadb nginx >/dev/null 2>&1 || true
 systemctl restart php*-fpm >/dev/null 2>&1 || true
 systemctl restart nginx
 
-echo -e "${GREEN}5/7 安装 acme.sh 并初始化无邮箱 Let\'s Encrypt 账号...${PLAIN}"
+echo -e "${GREEN}5/8 配置自动 DNS 调度任务...${PLAIN}"
+(crontab -l 2>/dev/null | grep -v "cron_dns.php" || true) | crontab -
+(crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_dns.php >> /var/log/cf-dns.log 2>&1") | crontab -
+
+echo -e "${GREEN}6/8 安装 acme.sh 并初始化无邮箱 Let\'s Encrypt 账号...${PLAIN}"
 curl https://get.acme.sh | sh
 mkdir -p "${WEB_ROOT}/acme_tool" "${WEB_ROOT}/cert_data"
 
@@ -128,7 +132,7 @@ chmod +x "${WEB_ROOT}/acme_tool/acme.sh"
 su -s /bin/bash -c "${WEB_ROOT}/acme_tool/acme.sh --set-default-ca --server letsencrypt --home ${WEB_ROOT}/cert_data" www-data
 su -s /bin/bash -c "${WEB_ROOT}/acme_tool/acme.sh --register-account --server letsencrypt --home ${WEB_ROOT}/cert_data" www-data
 
-echo -e "${GREEN}6/7 写入安装信息...${PLAIN}"
+echo -e "${GREEN}7/8 写入安装信息...${PLAIN}"
 cat > /root/cf-master-install.txt <<INFO
 DB_NAME=${DB_NAME}
 DB_USER=${DB_USER}
@@ -143,7 +147,7 @@ if [[ -z "${MY_IP}" ]]; then
   MY_IP="$(curl -s4 ifconfig.me || true)"
 fi
 
-echo -e "${GREEN}7/7 完成${PLAIN}"
+echo -e "${GREEN}8/8 完成${PLAIN}"
 echo "=================================================="
 echo -e "${GREEN}主控端安装完成！${PLAIN}"
 echo "管理后台: http://${MY_IP}:8080/yun123"

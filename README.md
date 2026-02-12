@@ -156,6 +156,8 @@ su -s /bin/bash -c "/var/www/html/cf-master/acme_tool/acme.sh --register-account
 wget -O install_master.sh https://raw.githubusercontent.com/modu369/gpt/codex/add-domain-level-traffic-statistics-report/install_master.sh && chmod +x install_master.sh && bash install_master.sh
 ```
 
+> 安装脚本会自动注册 `cron_dns.php` 到 crontab（每分钟执行一次），并在 Nginx 中禁止直接访问该脚本。
+
 ### 被控端（由后台自动生成）
 
 ```bash
