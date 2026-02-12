@@ -51,6 +51,14 @@ function detect_request_slug(): string
     return '';
 }
 
+function redirect_with_tab(string $tab): never
+{
+    $path = parse_url((string)($_SERVER['REQUEST_URI'] ?? 'admin.php'), PHP_URL_PATH);
+    $path = is_string($path) && $path !== '' ? $path : 'admin.php';
+    header('Location: ' . $path . '?tab=' . rawurlencode($tab));
+    exit;
+}
+
 function run_acme_command(string $cmd): string
 {
     $output = shell_exec($cmd . ' 2>&1');
@@ -125,11 +133,23 @@ if (!isset($_SESSION['is_admin']) || $_SESSION['is_admin'] !== true) {
 }
 
 $message = '';
+$activeTab = strtolower(trim((string)($_REQUEST['tab'] ?? 'dashboard')));
+$tabMap = ['nodes' => 'dashboard', 'cert' => 'certs'];
+if (isset($tabMap[$activeTab])) {
+    $activeTab = $tabMap[$activeTab];
+}
+if (!in_array($activeTab, ['dashboard', 'domains', 'certs', 'dns', 'settings'], true)) {
+    $activeTab = 'dashboard';
+}
 $acmeBin = __DIR__ . '/acme_tool/acme.sh';
 $certHome = __DIR__ . '/cert_data';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = postStr('action');
+    $postedTab = postStr('tab');
+    if ($postedTab !== '') {
+        $activeTab = strtolower($postedTab);
+    }
     $shouldNotify = false;
 
     if ($action === 'update_settings') {
@@ -280,12 +300,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $provider = $mode === 'auto' ? ($DNS_PROVIDER === 'huaweicloud' ? 'huaweicloud' : 'cloudflare') : '';
             $pdo->prepare("INSERT INTO certificates (domain, mode, provider, auto_renew, apply_status, status_msg) VALUES (?, ?, ?, ?, 'processing', '等待队列处理...') ON DUPLICATE KEY UPDATE mode=VALUES(mode), provider=VALUES(provider), auto_renew=VALUES(auto_renew), apply_status='processing', status_msg='等待队列处理...'")
                 ->execute([$domain, $mode, $provider, $autoRenew]);
-            $message = "<div class='alert alert-info'>证书申请任务已提交，系统后台正在处理...请稍后刷新查看进度。</div>";
+            redirect_with_tab('certs');
         }
     } elseif ($action === 'del_cert') {
         $id = (int)postStr('id');
         $pdo->prepare('DELETE FROM certificates WHERE id = ?')->execute([$id]);
-        $message = '<div class="alert alert-success">证书记录已删除。</div>';
+        redirect_with_tab('certs');
+    } elseif ($action === 'verify_manual_cert') {
+        $id = (int)postStr('id');
+        $pdo->prepare("UPDATE certificates SET apply_status='verifying', status_msg='等待验证...' WHERE id=?")->execute([$id]);
+        redirect_with_tab('certs');
+    } elseif ($action === 'retry_cert') {
+        $id = (int)postStr('id');
+        $pdo->prepare("UPDATE certificates SET apply_status='processing', status_msg='等待队列处理...' WHERE id=?")->execute([$id]);
+        redirect_with_tab('certs');
     } elseif ($action === 'cert_apply') {
 
         $domain = postStr('domain');
@@ -585,7 +613,7 @@ foreach ($certsList as $certRow) {
                                 }
                             ?>
                                 <tr>
-                                    <td><strong><?= htmlspecialchars((string)$c['domain'], ENT_QUOTES, 'UTF-8') ?></strong><br><small class="text-muted"><?= htmlspecialchars((string)($c['status_msg'] ?? ''), ENT_QUOTES, 'UTF-8') ?></small></td>
+                                    <td><strong><?= htmlspecialchars((string)$c['domain'], ENT_QUOTES, 'UTF-8') ?></strong><br><small class="text-muted"><?= htmlspecialchars((string)($c['status_msg'] ?? ''), ENT_QUOTES, 'UTF-8') ?></small><?php if ($applyStatus === 'wait_verify'): ?><div class="alert alert-warning p-2 mt-2 mb-0" style="font-size:0.9rem;"><strong>请添加 TXT 记录：</strong><br>主机记录: <code><?= htmlspecialchars((string)($c['dns_txt_domain'] ?? ''), ENT_QUOTES, 'UTF-8') ?></code><br>记录值: <code><?= htmlspecialchars((string)($c['dns_txt_value'] ?? ''), ENT_QUOTES, 'UTF-8') ?></code><form method="post" class="mt-2"><input type="hidden" name="action" value="verify_manual_cert"><input type="hidden" name="tab" value="certs"><input type="hidden" name="id" value="<?= (int)$c['id'] ?>"><button class="btn btn-sm btn-success w-100">✅ 我已添加，点击验证</button></form></div><?php endif; ?></td>
                                     <td>
                                         <?php if ((string)($c['mode'] ?? 'manual') === 'auto'): ?>
                                             <span class="badge bg-primary">自动 API (<?= htmlspecialchars((string)($c['provider'] ?: 'cloudflare'), ENT_QUOTES, 'UTF-8') ?>)</span>
@@ -600,8 +628,9 @@ foreach ($certsList as $certRow) {
                                         <form method="post" onsubmit="return confirm('删除证书?');">
                                             <input type="hidden" name="action" value="del_cert">
                                             <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
+                                            <input type="hidden" name="tab" value="certs">
                                             <button class="btn btn-sm btn-link text-danger">删除</button>
-                                        </form>
+                                        </form><?php if ($applyStatus === 'failed'): ?><form method="post"><input type="hidden" name="action" value="retry_cert"><input type="hidden" name="id" value="<?= (int)$c['id'] ?>"><input type="hidden" name="tab" value="certs"><button class="btn btn-sm btn-outline-danger">重试</button></form><?php endif; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -675,6 +704,7 @@ foreach ($certsList as $certRow) {
                 <div class="modal-header"><h5 class="modal-title">申请 SSL 证书</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                 <div class="modal-body">
                     <input type="hidden" name="action" value="apply_cert">
+                    <input type="hidden" name="tab" value="certs">
                     <div class="mb-3">
                         <label>域名</label>
                         <input type="text" name="domain" class="form-control" placeholder="www.example.com" required>
@@ -742,6 +772,13 @@ function toggleDnsForm() {
 </script>
 <script>
 toggleDnsForm();
+(function(){
+    var tab = <?= json_encode($activeTab, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    var btn = document.querySelector('[data-bs-target="#tab-' + tab + '"]');
+    if (btn && window.bootstrap && bootstrap.Tab) {
+        new bootstrap.Tab(btn).show();
+    }
+})();
 new Chart(document.getElementById('cpuChart'), {
     type: 'doughnut',
     data: {labels: ['已用', '空闲'], datasets: [{data: [<?= $avgCPU ?>, <?= max(0, 100 - $avgCPU) ?>], backgroundColor: ['#dc3545', '#198754']}]},
