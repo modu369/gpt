@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS `nodes` (
   `last_heartbeat` int(11) DEFAULT 0 COMMENT '最后心跳时间戳',
   `cpu_usage` float DEFAULT 0 COMMENT 'CPU占用率',
   `ram_usage` float DEFAULT 0 COMMENT '内存占用率',
+  `traffic_limit` int(11) DEFAULT 0 COMMENT '流量限制(GB)',
+  `traffic_used` bigint(20) DEFAULT 0 COMMENT '已用流量(Bytes)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `secret_key` (`secret_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -44,8 +46,8 @@ CREATE TABLE IF NOT EXISTS `certificates` (
   UNIQUE KEY `domain` (`domain`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`)
-VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0);
+INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_used`)
+VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0, 0, 0);
 
 INSERT IGNORE INTO `domains` (`id`, `domain`, `node_group_id`, `ssl_status`)
 VALUES (1, 'test.yourdomain.com', 0, 0), (2, 'api.client.com', 0, 0);
@@ -58,4 +60,13 @@ INSERT INTO `settings` (`key_name`, `value_json`) VALUES
 ('admin_user', JSON_QUOTE('admin')),
 ('admin_pass', JSON_QUOTE('admin123')),
 ('admin_slug', JSON_QUOTE('yun123'))
+ON DUPLICATE KEY UPDATE value_json = VALUES(value_json);
+
+
+INSERT INTO `settings` (`key_name`, `value_json`) VALUES
+('dns_provider', JSON_QUOTE('cloudflare')),
+('cf_email', JSON_QUOTE('')),
+('cf_key', JSON_QUOTE('')),
+('cf_zone_id', JSON_QUOTE('')),
+('cf_record_name', JSON_QUOTE('cdn'))
 ON DUPLICATE KEY UPDATE value_json = VALUES(value_json);

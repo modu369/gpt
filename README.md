@@ -167,3 +167,16 @@ curl -O https://raw.githubusercontent.com/modu369/gpt/codex/add-domain-level-tra
 ```bash
 bash install_node.sh --uninstall
 ```
+
+## DNS 智能调度（Cloudflare + 95%流量阈值）
+
+已提供 `control-plane/cron_dns.php`，建议通过 crontab 每分钟运行一次：
+
+```cron
+* * * * * /usr/bin/php /var/www/html/cf-master/cron_dns.php >> /var/log/cf-dns.log 2>&1
+```
+
+调度规则：
+- 仅纳入 `status=1` 且 60 秒内有心跳的节点。
+- 若节点设置了 `traffic_limit`，当 `traffic_used` 达到 95% 阈值会自动从 DNS 池移除。
+- 会同步 Cloudflare A 记录，删除不健康节点 IP、添加恢复健康节点 IP。
