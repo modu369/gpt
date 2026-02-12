@@ -69,6 +69,10 @@ $CF_EMAIL = (string)get_setting($pdo, 'cf_email', '');
 $CF_KEY = (string)get_setting($pdo, 'cf_key', '');
 $CF_ZONE = (string)get_setting($pdo, 'cf_zone_id', '');
 $CF_RECORD = (string)get_setting($pdo, 'cf_record_name', 'cdn');
+$HW_REGION = (string)get_setting($pdo, 'hw_region', 'ap-southeast-1');
+$HW_AK = (string)get_setting($pdo, 'hw_ak', '');
+$HW_SK = (string)get_setting($pdo, 'hw_sk', '');
+$HW_ZONE = (string)get_setting($pdo, 'hw_zone_id', '');
 
 $urlSlug = detect_request_slug();
 if (isset($_GET['logout']) || postStr('action') === 'logout') {
@@ -234,12 +238,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $CF_KEY = postStr('cf_key');
         $CF_ZONE = postStr('cf_zone_id');
         $CF_RECORD = postStr('cf_record_name') !== '' ? postStr('cf_record_name') : 'cdn';
+        $HW_AK = postStr('hw_ak');
+        $HW_SK = postStr('hw_sk');
+        $HW_ZONE = postStr('hw_zone_id');
+        $HW_REGION = postStr('hw_region') !== '' ? postStr('hw_region') : 'ap-southeast-1';
 
         set_setting($pdo, 'dns_provider', $DNS_PROVIDER);
         set_setting($pdo, 'cf_email', $CF_EMAIL);
         set_setting($pdo, 'cf_key', $CF_KEY);
         set_setting($pdo, 'cf_zone_id', $CF_ZONE);
         set_setting($pdo, 'cf_record_name', $CF_RECORD);
+        set_setting($pdo, 'hw_ak', $HW_AK);
+        set_setting($pdo, 'hw_sk', $HW_SK);
+        set_setting($pdo, 'hw_zone_id', $HW_ZONE);
+        set_setting($pdo, 'hw_region', $HW_REGION);
         $message = '<div class="alert alert-success">DNS 配置已保存。</div>';
     } elseif ($action === 'update_node_config') {
         $nodeID = (int)postStr('id');
@@ -532,7 +544,50 @@ foreach ($certsList as $certRow) {
         </div>
 
         <div class="tab-pane fade" id="tab-dns">
-            <div class="card"><div class="card-header">Cloudflare API 配置（自动调度使用）</div><div class="card-body"><form method="post"><input type="hidden" name="action" value="save_dns"><div class="mb-3"><label class="form-label">DNS Provider</label><select name="dns_provider" class="form-select"><option value="cloudflare" <?= $DNS_PROVIDER === 'cloudflare' ? 'selected' : '' ?>>Cloudflare</option></select></div><div class="mb-3"><label class="form-label">CF 邮箱</label><input type="text" name="cf_email" class="form-control" value="<?= htmlspecialchars($CF_EMAIL, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">CF Global API Key</label><input type="password" name="cf_key" class="form-control" value="<?= htmlspecialchars($CF_KEY, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">CF Zone ID</label><input type="text" name="cf_zone_id" class="form-control" value="<?= htmlspecialchars($CF_ZONE, ENT_QUOTES, 'UTF-8') ?>"></div><div class="mb-3"><label class="form-label">调度记录名（例如 cdn）</label><input type="text" name="cf_record_name" class="form-control" value="<?= htmlspecialchars($CF_RECORD, ENT_QUOTES, 'UTF-8') ?>"></div><button class="btn btn-success">保存 DNS 配置</button></form></div></div>
+            <div class="card">
+                <div class="card-header">DNS 调度配置</div>
+                <div class="card-body">
+                    <form method="post">
+                        <input type="hidden" name="action" value="save_dns">
+
+                        <div class="mb-4 border-bottom pb-3">
+                            <label class="form-label fw-bold">选择 DNS 服务商</label>
+                            <select name="dns_provider" class="form-select" id="dnsProviderSelect" onchange="toggleDnsForm()">
+                                <option value="cloudflare" <?= $DNS_PROVIDER === 'cloudflare' ? 'selected' : '' ?>>Cloudflare (免费/简单)</option>
+                                <option value="huaweicloud" <?= $DNS_PROVIDER === 'huaweicloud' ? 'selected' : '' ?>>华为云 DNS (支持1秒TTL/权重)</option>
+                            </select>
+                        </div>
+
+                        <div id="cfForm">
+                            <h6 class="text-primary">Cloudflare 配置</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label>邮箱</label><input type="text" name="cf_email" class="form-control" value="<?= htmlspecialchars($CF_EMAIL, ENT_QUOTES, 'UTF-8') ?>"></div>
+                                <div class="col-md-6 mb-3"><label>API Key</label><input type="password" name="cf_key" class="form-control" value="<?= htmlspecialchars($CF_KEY, ENT_QUOTES, 'UTF-8') ?>"></div>
+                                <div class="col-md-6 mb-3"><label>Zone ID</label><input type="text" name="cf_zone_id" class="form-control" value="<?= htmlspecialchars($CF_ZONE, ENT_QUOTES, 'UTF-8') ?>"></div>
+                            </div>
+                        </div>
+
+                        <div id="hwForm" style="display:none;">
+                            <h6 class="text-danger">华为云配置</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label>Access Key (AK)</label><input type="text" name="hw_ak" class="form-control" value="<?= htmlspecialchars($HW_AK, ENT_QUOTES, 'UTF-8') ?>"></div>
+                                <div class="col-md-6 mb-3"><label>Secret Key (SK)</label><input type="password" name="hw_sk" class="form-control" value="<?= htmlspecialchars($HW_SK, ENT_QUOTES, 'UTF-8') ?>"></div>
+                                <div class="col-md-6 mb-3"><label>Zone ID (域名ID)</label><input type="text" name="hw_zone_id" class="form-control" value="<?= htmlspecialchars($HW_ZONE, ENT_QUOTES, 'UTF-8') ?>"></div>
+                                <div class="col-md-6 mb-3"><label>区域代码</label><input type="text" name="hw_region" class="form-control" value="<?= htmlspecialchars($HW_REGION, ENT_QUOTES, 'UTF-8') ?>" placeholder="如 ap-southeast-1"></div>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label>调度域名前缀 (Record Name)</label>
+                            <input type="text" name="cf_record_name" class="form-control" value="<?= htmlspecialchars($CF_RECORD, ENT_QUOTES, 'UTF-8') ?>" placeholder="如 cdn, 或完整域名 cdn.example.com.">
+                            <small class="text-muted">注意：华为云建议填写完整域名并以点结尾，如 <code>cdn.example.com.</code></small>
+                        </div>
+
+                        <button class="btn btn-success">保存并应用</button>
+                    </form>
+                </div>
+            </div>
+
             <div class="card mt-3"><div class="card-header">带宽上限配置（Mbps）</div><div class="card-body"><table class="table table-sm"><thead><tr><th>节点</th><th>当前上限</th><th>操作</th></tr></thead><tbody><?php foreach ($nodes as $n): ?><tr><td><?= htmlspecialchars((string)$n['hostname'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int)($n['max_bandwidth'] ?? 0) ?></td><td><form method="post" class="d-flex gap-1"><input type="hidden" name="action" value="update_node_bandwidth"><input type="hidden" name="id" value="<?= (int)$n['id'] ?>"><input type="number" min="0" class="form-control form-control-sm" name="max_bandwidth" value="<?= (int)($n['max_bandwidth'] ?? 0) ?>" style="width:90px"><button class="btn btn-sm btn-outline-secondary">保存</button></form></td></tr><?php endforeach; ?></tbody></table></div></div>
             <div class="alert alert-info mt-3">系统可通过 <code>cron_dns.php</code> 每分钟同步健康节点：离线或流量达到 95% 阈值会自动下线 DNS 解析。</div>
         </div>
@@ -559,8 +614,24 @@ function copyCmd(id) {
     document.execCommand('copy');
     alert('命令已复制！');
 }
+function toggleDnsForm() {
+    var el = document.getElementById('dnsProviderSelect');
+    if (!el) return;
+    var val = el.value;
+    var cf = document.getElementById('cfForm');
+    var hw = document.getElementById('hwForm');
+    if (!cf || !hw) return;
+    if (val === 'huaweicloud') {
+        hw.style.display = 'block';
+        cf.style.display = 'none';
+    } else {
+        hw.style.display = 'none';
+        cf.style.display = 'block';
+    }
+}
 </script>
 <script>
+toggleDnsForm();
 new Chart(document.getElementById('cpuChart'), {
     type: 'doughnut',
     data: {labels: ['已用', '空闲'], datasets: [{data: [<?= $avgCPU ?>, <?= max(0, 100 - $avgCPU) ?>], backgroundColor: ['#dc3545', '#198754']}]},

@@ -84,7 +84,11 @@ INSERT INTO `settings` (`key_name`, `value_json`) VALUES
 ('cf_email', JSON_QUOTE('')),
 ('cf_key', JSON_QUOTE('')),
 ('cf_zone_id', JSON_QUOTE('')),
-('cf_record_name', JSON_QUOTE('cdn'))
+('cf_record_name', JSON_QUOTE('cdn')),
+('hw_region', JSON_QUOTE('ap-southeast-1')),
+('hw_ak', JSON_QUOTE('')),
+('hw_sk', JSON_QUOTE('')),
+('hw_zone_id', JSON_QUOTE(''))
 ON DUPLICATE KEY UPDATE value_json = VALUES(value_json);
 
 

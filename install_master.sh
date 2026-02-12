@@ -18,11 +18,13 @@ fi
 # 1. 安装基础环境
 echo -e "${GREEN}1/8 安装基础环境...${PLAIN}"
 apt update -y
-apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip curl cron socat
+apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip curl cron socat python3-pip
 
 systemctl enable cron && systemctl start cron
 systemctl enable mariadb && systemctl start mariadb
 PHP_VER=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+echo -e "${GREEN}安装华为云 SDK 支持...${PLAIN}"
+pip3 install huaweicloudsdkdns --break-system-packages
 
 # 2. 配置数据库
 echo -e "${GREEN}2/8 配置数据库...${PLAIN}"
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS certificates (id int AUTO_INCREMENT PRIMARY KEY, doma
 CREATE TABLE IF NOT EXISTS cf_ip_pool (id int AUTO_INCREMENT PRIMARY KEY, ip_address varchar(45) UNIQUE, status tinyint DEFAULT 1, latency int DEFAULT 0, fail_count int DEFAULT 0, last_check int DEFAULT 0);
 
 INSERT IGNORE INTO settings (key_name, value_json) VALUES 
-('admin_user', '"admin"'), ('admin_pass', '"admin123"'), ('admin_slug', '"yun123"'), ('cf_ips', '["104.16.123.96"]'), ('cf_email', '""'), ('cf_key', '""'), ('cf_zone_id', '""'), ('cf_record_name', '"cdn"');
+('admin_user', '"admin"'), ('admin_pass', '"admin123"'), ('admin_slug', '"yun123"'), ('cf_ips', '["104.16.123.96"]'), ('dns_provider', '"cloudflare"'), ('cf_email', '""'), ('cf_key', '""'), ('cf_zone_id', '""'), ('cf_record_name', '"cdn"'), ('hw_region', '"ap-southeast-1"'), ('hw_ak', '""'), ('hw_sk', '""'), ('hw_zone_id', '""');
 "
 
 # 5. 生成 db.php (生成在 WEB_ROOT 即 control-plane 下)

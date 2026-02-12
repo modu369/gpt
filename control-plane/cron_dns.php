@@ -1,202 +1,234 @@
 <?php
-// cron_dns.php - 智能调度器 (V3.0 最终高可用版)
-// 新增特性: 单节点豁免保护、全员过载兜底、扩容告警
+// cron_dns.php - 双核智能调度器 (Cloudflare + Huawei Cloud)
+// V4.0: 支持多 DNS 服务商切换，支持华为云 1秒 TTL 和 原生权重
 
 require_once __DIR__ . '/db.php';
 
-// 1. 获取配置
+// === 配置获取辅助函数 ===
 function get_conf($pdo, $k) {
     $s = $pdo->prepare("SELECT value_json FROM settings WHERE key_name=?");
     $s->execute([$k]); $v=$s->fetchColumn(); return $v?json_decode($v,true):'';
 }
 
-$CF_EMAIL = get_conf($pdo, 'cf_email');
-$CF_KEY   = get_conf($pdo, 'cf_key');
-$CF_ZONE  = get_conf($pdo, 'cf_zone_id');
-$CF_NAME  = get_conf($pdo, 'cf_record_name');
+// === 1. 定义 DNS 接口标准 ===
+interface DnsDriver {
+    // 同步 IP 列表 (target_ips 结构: ['ip' => '1.1.1.1', 'weight' => 50])
+    public function sync($record_name, $target_nodes);
+}
 
-if (!$CF_EMAIL || !$CF_KEY || !$CF_ZONE || !$CF_NAME) die("Cloudflare 配置不完整。\n");
+// === 2. Cloudflare 驱动 (原有逻辑) ===
+class CloudflareDriver implements DnsDriver {
+    private $email, $key, $zone_id;
+    public function __construct($e, $k, $z) { $this->email=$e; $this->key=$k; $this->zone_id=$z; }
 
-// 2. 获取所有开启的节点
+    public function sync($record_name, $nodes) {
+        // CF 免费版不支持 API 设置权重，只能通过“存在即命中”的概率调度
+        // 这里的 $nodes 已经是经过上层“概率算法”筛选过的最终 IP 列表
+
+        $headers = ["X-Auth-Email: {$this->email}", "X-Auth-Key: {$this->key}", "Content-Type: application/json"];
+
+        // 获取现有记录
+        $url = "https://api.cloudflare.com/client/v4/zones/{$this->zone_id}/dns_records?type=A&name={$record_name}";
+        $ch = curl_init($url); curl_setopt($ch, CURLOPT_RETURNTRANSFER, true); curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        $res = json_decode(curl_exec($ch), true);
+        curl_close($ch);
+
+        if (!isset($res['success']) || !$res['success']) {
+            echo "CF API Error\n";
+            return;
+        }
+
+        $current_map = []; // IP => ID
+        foreach ($res['result'] as $r) {
+            // 匹配完整域名
+            if (strpos($r['name'], $record_name) !== false) {
+                $current_map[$r['content']] = $r['id'];
+            }
+        }
+
+        // 提取目标 IP (CF 驱动只关心 IP，不关心权重值)
+        $target_ips = array_column($nodes, 'ip');
+
+        $to_add = array_diff($target_ips, array_keys($current_map));
+        $to_del = array_diff(array_keys($current_map), $target_ips);
+
+        // 删除
+        foreach ($to_del as $ip) {
+            echo " -> [CF] 删除: $ip\n";
+            $rid = $current_map[$ip];
+            $ch = curl_init("https://api.cloudflare.com/client/v4/zones/{$this->zone_id}/dns_records/$rid");
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "DELETE");
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+            curl_exec($ch);
+            curl_close($ch);
+        }
+
+        // 添加
+        foreach ($to_add as $ip) {
+            echo " -> [CF] 添加: $ip\n";
+            $data = ['type' => 'A', 'name' => $record_name, 'content' => $ip, 'ttl' => 60, 'proxied' => false];
+            $ch = curl_init("https://api.cloudflare.com/client/v4/zones/{$this->zone_id}/dns_records");
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+            curl_exec($ch);
+            curl_close($ch);
+        }
+    }
+}
+
+// === 3. 华为云 驱动 (新功能) ===
+class HuaweiDriver implements DnsDriver {
+    private $ak, $sk, $zone_id, $region;
+
+    public function __construct($ak, $sk, $zid, $reg) {
+        $this->ak = $ak;
+        $this->sk = $sk;
+        $this->zone_id = $zid;
+        $this->region = $reg;
+    }
+
+    public function sync($record_name, $nodes) {
+        echo " -> [华为云] 正在同步... (目标节点数: " . count($nodes) . ")\n";
+
+        $batch_list = [];
+        foreach ($nodes as $node) {
+            $batch_list[] = [
+                'name' => $record_name,
+                'type' => 'A',
+                'ttl' => 1,
+                'weight' => intval($node['weight']),
+                'records' => [$node['ip']],
+                'status' => 'ENABLE',
+            ];
+        }
+
+        // 实际发送请求：调用 Python 辅助脚本处理签名
+        $json_payload = json_encode(['zone_id' => $this->zone_id, 'region' => $this->region, 'records' => $batch_list], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $tmp_file = '/tmp/hw_dns_payload.json';
+        file_put_contents($tmp_file, $json_payload);
+
+        $cmd = "export CLOUD_SDK_AK='" . addslashes($this->ak) . "' && export CLOUD_SDK_SK='" . addslashes($this->sk) . "' && python3 " . escapeshellarg(__DIR__ . '/hw_dns_pusher.py') . " " . escapeshellarg($tmp_file);
+        $output = shell_exec($cmd);
+        echo " -> [华为云] Python 响应: " . ($output ?? '') . "\n";
+    }
+}
+
+// === 4. 主逻辑 ===
+
+echo "[" . date('Y-m-d H:i:s') . "] 开始智能调度...\n";
+
+// A. 筛选节点
 $nodes = $pdo->query("SELECT * FROM nodes WHERE status=1")->fetchAll();
-$candidates = []; // 存活候选池 (只要活着且流量没欠费，就算候选)
-
-echo "[" . date('Y-m-d H:i:s') . "] 开始高可用调度...\n";
-
-// === 阶段一：硬性筛选 (离线/欠费) ===
+$candidates = [];
 foreach ($nodes as $node) {
-    $name = $node['hostname'];
-    
-    // 1. 在线状态检查
-    if (time() - $node['last_heartbeat'] > 60) {
-        echo " - [$name] 🔴 离线 (跳过)\n";
+    if (time() - (int)$node['last_heartbeat'] > 60) {
         continue;
     }
-
-    // 2. 月流量限额检查 (硬指标，超了必须停)
-    $limit_bytes = $node['traffic_limit'] * 1024 * 1024 * 1024;
-    if ($limit_bytes > 0 && $node['traffic_used'] > ($limit_bytes * 0.95)) {
-        echo " - [$name] 🔴 月流量耗尽 (跳过)\n";
+    $limit_bytes = (int)$node['traffic_limit'] * 1024 * 1024 * 1024;
+    if ($limit_bytes > 0 && (float)$node['traffic_used'] > ($limit_bytes * 0.95)) {
         continue;
     }
-
-    // 加入候选池
     $candidates[] = $node;
 }
 
-$candidate_count = count($candidates);
-$final_target_ips = [];
-
-if ($candidate_count == 0) {
-    die("❌ 严重错误：全网无可用节点 (全部离线或欠费)！停止 DNS 更新。\n");
+// B. 计算权重 (生成目标列表)
+$final_nodes = [];
+$dns_provider = (string)get_conf($pdo, 'dns_provider');
+if ($dns_provider === '') {
+    $dns_provider = 'cloudflare';
 }
 
-// === 阶段二：负载策略决策 ===
-
-if ($candidate_count == 1) {
-    // 【场景 A：单节点保护模式】
-    $node = $candidates[0];
-    echo "🛡️ 单节点保护模式：仅有一台存活节点 [{$node['hostname']}]。\n";
-    echo "   -> 忽略 CPU/带宽负载限制，强制解析，防止断网。\n";
-    
-    // 即使它 CPU 100% 也要上
-    $final_target_ips[] = $node['ip_address'];
-    
-    // 如果它确实负载很高，还是记录一条警告给管理员看，但不下线
-    check_load_and_alert($pdo, $node, true);
-
-} else {
-    // 【场景 B：多节点负载均衡模式】
-    echo "⚖️ 多节点集群模式 (在线: $candidate_count) -> 启动智能筛选...\n";
-    
+// 如果是 华为云，保留所有合格节点并计算精确权重
+if ($dns_provider === 'huaweicloud') {
     foreach ($candidates as $node) {
-        // 执行严格的负载检查
-        if (check_load_and_alert($pdo, $node, false)) {
-            // 通过检查，根据权重随机入选
-            $base_weight = intval($node['weight']);
-            // 简单概率: 权重 100 -> 100% 入选
-            if ($base_weight >= mt_rand(1, 100)) {
-                $final_target_ips[] = $node['ip_address'];
-                echo "   -> [{$node['hostname']}] 🟢 状态健康 (权重命中) -> 入选\n";
-            } else {
-                echo "   -> [{$node['hostname']}] 🟡 状态健康 (权重轮空) -> 轮空\n";
+        $weight = intval($node['weight']);
+        if ((float)$node['cpu_usage'] > 95) {
+            $weight = 0;
+        } elseif ((float)$node['cpu_usage'] > 80) {
+            $weight = intval($weight * 0.2);
+        }
+
+        if ((int)$node['max_bandwidth'] > 0) {
+            $bwPct = ((int)$node['current_bandwidth'] / max(1, (int)$node['max_bandwidth'])) * 100;
+            if ($bwPct > 95) {
+                $weight = 0;
+            } elseif ($bwPct > 80) {
+                $weight = intval($weight * 0.3);
             }
-        } else {
-            echo "   -> [{$node['hostname']}] 🔴 负载过高 -> 暂时剔除\n";
+        }
+
+        if ($weight > 0) {
+            $final_nodes[] = ['ip' => $node['ip_address'], 'weight' => $weight];
         }
     }
+} else {
+    // Cloudflare: 用概率算法模拟权重
+    foreach ($candidates as $node) {
+        $weight = max(0, min(100, (int)$node['weight']));
+        $cpu = (float)$node['cpu_usage'];
+        if ($cpu > 95) {
+            $weight = 0;
+        } elseif ($cpu > 80) {
+            $weight = (int)floor($weight * 0.5);
+        }
 
-    // 【场景 C：全员过载兜底】
-    // 如果筛选完，发现 0 个节点入选 (说明所有节点都挂了/忙了)
-    if (empty($final_target_ips)) {
-        echo "⚠️ 紧急警报：所有节点均过载或权重未命中！\n";
-        echo "⚠️ 启动 [全员兜底] 策略：将所有存活节点强制加入 DNS，共同分担流量。\n";
-        
-        // 记录一条系统级严重告警
-        log_alert($pdo, 0, 'Cluster', '100%', "集群严重超载！所有节点($candidate_count)均已满载，请立即增加节点！");
-        
-        foreach ($candidates as $node) {
-            $final_target_ips[] = $node['ip_address'];
+        if ((int)$node['max_bandwidth'] > 0) {
+            $bwPct = ((int)$node['current_bandwidth'] / max(1, (int)$node['max_bandwidth'])) * 100;
+            if ($bwPct > 95) {
+                $weight = 0;
+            } elseif ($bwPct > 80) {
+                $weight = (int)floor($weight * 0.3);
+            }
+        }
+
+        if ($weight > 0 && $weight >= mt_rand(1, 100)) {
+            $final_nodes[] = ['ip' => $node['ip_address'], 'weight' => 0];
         }
     }
 }
 
-// --------------------------------------------------------
-// 辅助函数：负载检查与告警
-// 返回 true 表示健康，false 表示过载
-function check_load_and_alert($pdo, $node, $is_single_mode) {
-    $overloaded = false;
-    
-    // 1. CPU 检查
-    if ($node['cpu_usage'] > 95) {
-        log_alert($pdo, $node['id'], 'CPU', $node['cpu_usage'].'%', 'CPU 爆满');
-        $overloaded = true;
-    }
-    
-    // 2. 带宽检查
-    if ($node['max_bandwidth'] > 0) {
-        $bw_pct = ($node['current_bandwidth'] / $node['max_bandwidth']) * 100;
-        if ($bw_pct > 95) {
-            log_alert($pdo, $node['id'], 'Bandwidth', $bw_pct.'%', '带宽跑满');
-            $overloaded = true;
-        }
-    }
-
-    // 如果是单节点模式，虽然报了警，但依然返回 true (允许解析)
-    if ($is_single_mode) return true;
-
-    return !$overloaded;
-}
-
-// 辅助函数：写入告警 (30分钟防抖)
-function log_alert($pdo, $node_id, $type, $val, $msg) {
-    // node_id = 0 代表系统级告警
-    $stmt = $pdo->prepare("SELECT id FROM node_alerts WHERE node_id=? AND type=? AND created_at > DATE_SUB(NOW(), INTERVAL 30 MINUTE)");
-    $stmt->execute([$node_id, $type]);
-    if (!$stmt->fetch()) {
-        // 获取名字
-        $name = 'SYSTEM';
-        if ($node_id > 0) {
-            $s = $pdo->prepare("SELECT hostname FROM nodes WHERE id=?");
-            $s->execute([$node_id]); $name = $s->fetchColumn();
-        }
-        
-        $pdo->prepare("INSERT INTO node_alerts (node_id, node_name, type, value, message) VALUES (?, ?, ?, ?, ?)")
-            ->execute([$node_id, $name, $type, $val, $msg]);
-        echo "   ! 触发告警: $msg\n";
+// 兜底逻辑
+if (empty($final_nodes) && !empty($candidates)) {
+    foreach ($candidates as $n) {
+        $final_nodes[] = ['ip' => $n['ip_address'], 'weight' => 1];
     }
 }
 
-// --------------------------------------------------------
-// 3. 对接 Cloudflare API (执行更新)
-// (这部分代码保持不变，负责将 $final_target_ips 推送到 CF)
+// C. 执行同步
+$record_name = (string)get_conf($pdo, 'cf_record_name');
+if ($record_name === '') {
+    $record_name = 'cdn';
+}
 
-$headers = [
-    "X-Auth-Email: $CF_EMAIL",
-    "X-Auth-Key: $CF_KEY",
-    "Content-Type: application/json"
-];
-
-$url = "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records?type=A&name=$CF_NAME";
-$ch = curl_init($url);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-$res = json_decode(curl_exec($ch), true);
-curl_close($ch);
-
-if (!isset($res['success']) || !$res['success']) die("CF API Error\n");
-
-$current_records = [];
-foreach ($res['result'] as $record) {
-    if ($record['name'] == $CF_NAME || $record['name'] == $CF_NAME . "." . $res['result'][0]['zone_name']) {
-        $current_records[$record['content']] = $record['id'];
+if ($dns_provider === 'huaweicloud') {
+    $ak = (string)get_conf($pdo, 'hw_ak');
+    $sk = (string)get_conf($pdo, 'hw_sk');
+    $zid = (string)get_conf($pdo, 'hw_zone_id');
+    $reg = (string)get_conf($pdo, 'hw_region');
+    if ($reg === '') {
+        $reg = 'ap-southeast-1';
     }
-}
 
-$ips_to_add = array_diff($final_target_ips, array_keys($current_records));
-$ips_to_del = array_diff(array_keys($current_records), $final_target_ips);
+    if ($ak !== '' && $sk !== '' && $zid !== '') {
+        $driver = new HuaweiDriver($ak, $sk, $zid, $reg);
+        $driver->sync($record_name, $final_nodes);
+    } else {
+        echo "❌ 华为云配置缺失\n";
+    }
+} else {
+    $mail = (string)get_conf($pdo, 'cf_email');
+    $key  = (string)get_conf($pdo, 'cf_key');
+    $zid  = (string)get_conf($pdo, 'cf_zone_id');
 
-// 执行删除
-foreach ($ips_to_del as $ip) {
-    echo " -> 🗑️ DNS 删除: $ip\n";
-    $rid = $current_records[$ip];
-    $ch = curl_init("https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records/$rid");
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "DELETE");
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_exec($ch); curl_close($ch);
-}
-
-// 执行添加
-foreach ($ips_to_add as $ip) {
-    echo " -> ➕ DNS 添加: $ip\n";
-    $data = ['type'=>'A', 'name'=>$CF_NAME, 'content'=>$ip, 'ttl'=>60, 'proxied'=>false];
-    $ch = curl_init("https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records");
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_exec($ch); curl_close($ch);
+    if ($mail !== '' && $key !== '' && $zid !== '') {
+        $driver = new CloudflareDriver($mail, $key, $zid);
+        $driver->sync($record_name, $final_nodes);
+    } else {
+        echo "❌ Cloudflare 配置缺失\n";
+    }
 }
 
 echo "✅ 调度完成。\n";
