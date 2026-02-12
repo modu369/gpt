@@ -27,12 +27,14 @@ apt install -y nginx php-fpm php-mysql php-curl php-xml mariadb-server git unzip
 systemctl enable --now cron >/dev/null 2>&1 || true
 
 echo -e "${GREEN}2/7 配置数据库...${PLAIN}"
-DB_PASS="$(openssl rand -base64 18 | tr -d '\n')"
+# 生成纯字母+数字的 16 位随机密码，避免特殊字符在 shell/mysql 中被误解析
+DB_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
 DB_NAME="cf_proxy_master"
 DB_USER="cf_master"
 
 mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
 mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
 mysql -e "FLUSH PRIVILEGES;"
 
