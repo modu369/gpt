@@ -203,7 +203,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $secret = bin2hex(random_bytes(16));
             try {
                 $pdo->prepare('INSERT INTO nodes (hostname, ip_address, secret_key) VALUES (?, ?, ?)')->execute([$hostname, $ip, $secret]);
-                $message = '<div class="alert alert-success">节点添加成功，密钥：<code class="user-select-all">'.htmlspecialchars($secret, ENT_QUOTES, 'UTF-8').'</code></div>';
+
+                $isHTTPS = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+                $scheme = $isHTTPS ? 'https://' : 'http://';
+                $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+                if ($host === '') {
+                    $serverName = (string)($_SERVER['SERVER_NAME'] ?? '127.0.0.1');
+                    $serverPort = (string)($_SERVER['SERVER_PORT'] ?? '8080');
+                    $host = $serverName . ':' . $serverPort;
+                }
+
+                $masterAPI = $scheme . $host . '/api';
+                $installCmd = 'curl -O https://raw.githubusercontent.com/modu369/gpt/codex/add-domain-level-traffic-statistics-report/install_node.sh '
+                    . '&& chmod +x install_node.sh '
+                    . '&& ./install_node.sh -master ' . $masterAPI . ' -secret ' . $secret;
+                $safeInstallCmd = htmlspecialchars($installCmd, ENT_QUOTES, 'UTF-8');
+                $cmdInputID = 'cmd_' . $secret;
+
+                $message = '<div class="alert alert-success">'
+                    . '<h5 class="mb-2">✅ 节点添加成功！</h5>'
+                    . '<p class="mb-2">请在被控端服务器执行以下一键安装命令：</p>'
+                    . '<div class="input-group">'
+                    . '<input type="text" class="form-control" id="' . $cmdInputID . '" value="' . $safeInstallCmd . '" readonly>'
+                    . '<button type="button" class="btn btn-outline-secondary" onclick="copyCmd(\'' . $cmdInputID . '\')">复制</button>'
+                    . '</div>'
+                    . '<div class="mt-2 small text-muted">节点密钥：<code class="user-select-all">'
+                    . htmlspecialchars($secret, ENT_QUOTES, 'UTF-8')
+                    . '</code></div>'
+                    . '</div>';
                 $shouldNotify = true;
             } catch (Throwable $e) {
                 $message = '<div class="alert alert-danger">节点添加失败：'.htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8').'</div>';
@@ -371,6 +398,21 @@ foreach ($certsList as $certRow) {
 
 <div class="modal fade" id="addNodeModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form method="post"><div class="modal-header"><h5 class="modal-title">新增节点</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><input type="hidden" name="action" value="add_node"><div class="mb-2"><label>名称</label><input type="text" name="hostname" class="form-control" required></div><div class="mb-2"><label>IP</label><input type="text" name="ip" class="form-control" required></div></div><div class="modal-footer"><button class="btn btn-primary">确定</button></div></form></div></div></div>
 
+<script>
+function copyCmd(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(function () {
+            alert('命令已复制！');
+        });
+        return;
+    }
+    el.select();
+    document.execCommand('copy');
+    alert('命令已复制！');
+}
+</script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

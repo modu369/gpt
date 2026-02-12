@@ -145,3 +145,23 @@ su -s /bin/bash -c "/var/www/html/cf-master/acme_tool/acme.sh --register-account
 2. 在 DNS 服务商添加 `_acme-challenge` TXT。
 3. 回到后台点击“验证并签发”。
 4. 证书入库后通过 `get_config.php` 下发到节点，节点通过 push/poll 自动热更新内存证书。
+
+## 一键安装脚本
+
+### 主控端（Debian 12）
+
+```bash
+wget -O install_master.sh https://raw.githubusercontent.com/modu369/gpt/codex/add-domain-level-traffic-statistics-report/install_master.sh && chmod +x install_master.sh && bash install_master.sh
+```
+
+### 被控端（由后台自动生成）
+
+```bash
+curl -O https://raw.githubusercontent.com/modu369/gpt/codex/add-domain-level-traffic-statistics-report/install_node.sh && chmod +x install_node.sh && ./install_node.sh -master http://<主控IP>:8080/api -secret <节点密钥>
+```
+
+### 被控端卸载
+
+```bash
+bash install_node.sh --uninstall
+```
