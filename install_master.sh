@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS node_alerts (id int AUTO_INCREMENT PRIMARY KEY, node_id int, node_name varchar(100), type varchar(20), value varchar(50), message text, is_read tinyint DEFAULT 0, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS domains (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS settings (key_name varchar(50) PRIMARY KEY, value_json json);
-CREATE TABLE IF NOT EXISTS certificates (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, cert_body text, key_body text, expire_time int DEFAULT 0, status tinyint DEFAULT 0, dns_challenge varchar(255), created_at timestamp DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS certificates (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, cert_body text, key_body text, expire_time int DEFAULT 0, status tinyint DEFAULT 0, dns_challenge varchar(255), mode varchar(10) DEFAULT 'manual', provider varchar(20) DEFAULT '', auto_renew tinyint DEFAULT 0, apply_status varchar(20) DEFAULT 'pending', status_msg text, dns_txt_domain varchar(255) DEFAULT '', dns_txt_value varchar(255) DEFAULT '', created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS cf_ip_pool (id int AUTO_INCREMENT PRIMARY KEY, ip_address varchar(45) UNIQUE, status tinyint DEFAULT 1, latency int DEFAULT 0, fail_count int DEFAULT 0, last_check int DEFAULT 0);
 
 INSERT IGNORE INTO settings (key_name, value_json) VALUES 
@@ -99,6 +99,7 @@ server {
     location ~ /(db.php|database.sql) { deny all; }
     location ~ /cron_dns.php { deny all; }
     location ~ /monitor_cf.php { deny all; }
+    location ~ /cron_cert.php { deny all; }
     location ~ /hw_dns_pusher.py { deny all; }
 }
 EOF2
@@ -111,6 +112,7 @@ echo -e "${GREEN}7/9 配置自动任务...${PLAIN}"
 (crontab -l 2>/dev/null | grep -v "cf-master") | crontab -
 (crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_dns.php >> /var/log/cf-dns.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/monitor_cf.php >> /var/log/cf-monitor.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "* * * * * /usr/bin/php ${WEB_ROOT}/cron_cert.php >> /var/log/cf-cert.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "0 0 1 * * mysql ${DB_NAME} -e 'UPDATE nodes SET traffic_used=0'") | crontab -
 
 # 8. Acme.sh

@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS `certificates` (
   `expire_time` int(11) DEFAULT 0 COMMENT '过期时间戳',
   `status` tinyint(1) DEFAULT 0 COMMENT '0:待验证 1:已签发',
   `dns_challenge` varchar(255) DEFAULT '' COMMENT '待验证的TXT记录值',
+  `mode` varchar(10) DEFAULT 'manual' COMMENT '申请模式: auto/manual',
+  `provider` varchar(20) DEFAULT '' COMMENT 'DNS提供商: cloudflare/huaweicloud',
+  `auto_renew` tinyint DEFAULT 0 COMMENT '自动续费: 1是 0否',
+  `apply_status` varchar(20) DEFAULT 'pending' COMMENT '状态: pending/processing/verifying/success/failed',
+  `status_msg` text COMMENT '当前进度或报错信息',
+  `dns_txt_domain` varchar(255) DEFAULT '' COMMENT '需添加的TXT域名',
+  `dns_txt_value` varchar(255) DEFAULT '' COMMENT '需添加的TXT值',
   `created_at` timestamp DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `domain` (`domain`)

@@ -270,7 +270,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $bandwidthMax = max(0, (int)postStr('max_bandwidth'));
         $pdo->prepare('UPDATE nodes SET max_bandwidth = ? WHERE id = ?')->execute([$bandwidthMax, $nodeID]);
         $message = '<div class="alert alert-success">节点带宽上限已更新。</div>';
+    } elseif ($action === 'apply_cert') {
+        $domain = postStr('domain');
+        $mode = postStr('mode') === 'auto' ? 'auto' : 'manual';
+        $autoRenew = isset($_POST['auto_renew']) ? 1 : 0;
+        if ($domain === '') {
+            $message = '<div class="alert alert-warning">域名不能为空。</div>';
+        } else {
+            $provider = $mode === 'auto' ? ($DNS_PROVIDER === 'huaweicloud' ? 'huaweicloud' : 'cloudflare') : '';
+            $pdo->prepare("INSERT INTO certificates (domain, mode, provider, auto_renew, apply_status, status_msg) VALUES (?, ?, ?, ?, 'processing', '等待队列处理...') ON DUPLICATE KEY UPDATE mode=VALUES(mode), provider=VALUES(provider), auto_renew=VALUES(auto_renew), apply_status='processing', status_msg='等待队列处理...'")
+                ->execute([$domain, $mode, $provider, $autoRenew]);
+            $message = "<div class='alert alert-info'>证书申请任务已提交，系统后台正在处理...请稍后刷新查看进度。</div>";
+        }
+    } elseif ($action === 'del_cert') {
+        $id = (int)postStr('id');
+        $pdo->prepare('DELETE FROM certificates WHERE id = ?')->execute([$id]);
+        $message = '<div class="alert alert-success">证书记录已删除。</div>';
     } elseif ($action === 'cert_apply') {
+
         $domain = postStr('domain');
         if ($domain === '') {
             $message = '<div class="alert alert-warning">证书域名不能为空。</div>';
@@ -545,8 +562,54 @@ foreach ($certsList as $certRow) {
         </div>
 
         <div class="tab-pane fade" id="tab-certs">
-            <div class="card mb-4"><div class="card-header">申请新证书 (Let's Encrypt 手动 DNS)</div><div class="card-body"><form method="post" class="d-flex"><input type="hidden" name="action" value="cert_apply"><input type="text" name="domain" class="form-control me-2" placeholder="example.com 或 *.example.com" required><button class="btn btn-primary">第一步：获取 DNS 验证值</button></form></div></div>
-            <div class="card"><div class="card-header">证书列表</div><div class="card-body"><table class="table table-bordered align-middle"><thead><tr><th>域名</th><th>状态</th><th>验证信息 / 有效期</th><th>操作</th></tr></thead><tbody><?php foreach ($certsList as $c): ?><tr><td><strong><?= htmlspecialchars((string)$c['domain'], ENT_QUOTES, 'UTF-8') ?></strong></td><td><?php if ((int)$c['status'] === 0): ?><span class="badge bg-warning text-dark">待验证</span><?php else: ?><span class="badge bg-success">已生效</span><?php endif; ?></td><td><?php if ((int)$c['status'] === 0): ?><div class="alert alert-secondary mb-0 p-2 small">请添加 TXT 记录：<br><strong>_acme-challenge.<?= htmlspecialchars(trim((string)$c['domain'], '*.'), ENT_QUOTES, 'UTF-8') ?></strong><br>值：<code class="user-select-all"><?= htmlspecialchars((string)$c['dns_challenge'], ENT_QUOTES, 'UTF-8') ?></code></div><?php else: ?><small>过期时间：<?= date('Y-m-d H:i', (int)$c['expire_time']) ?></small><?php if (((int)$c['expire_time'] - time()) < 5 * 86400): ?> <span class="badge bg-danger">即将过期</span><?php endif; ?><?php endif; ?></td><td><?php if ((int)$c['status'] === 0): ?><form method="post"><input type="hidden" name="action" value="cert_verify"><input type="hidden" name="domain" value="<?= htmlspecialchars((string)$c['domain'], ENT_QUOTES, 'UTF-8') ?>"><button class="btn btn-success btn-sm">第二步：验证并签发</button></form><?php else: ?><form method="post"><input type="hidden" name="action" value="cert_apply"><input type="hidden" name="domain" value="<?= htmlspecialchars((string)$c['domain'], ENT_QUOTES, 'UTF-8') ?>"><button class="btn btn-primary btn-sm">强制续期</button></form><?php endif; ?></td></tr><?php endforeach; ?></tbody></table></div></div>
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>证书申请与续费管理</span>
+                    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCertModal">+ 申请证书</button>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead><tr><th>域名</th><th>模式</th><th>状态</th><th>有效期</th><th>续费</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <?php foreach ($certsList as $c):
+                                $days = ((int)$c['expire_time'] > 0) ? (int)floor(((int)$c['expire_time'] - time()) / 86400) : -1;
+                                $applyStatus = (string)($c['apply_status'] ?? 'pending');
+                                $statusBadge = '<span class="badge bg-secondary">' . htmlspecialchars($applyStatus, ENT_QUOTES, 'UTF-8') . '</span>';
+                                if ($applyStatus === 'success') {
+                                    $statusBadge = '<span class="badge bg-success">正常</span>';
+                                } elseif ($applyStatus === 'processing' || $applyStatus === 'verifying' || $applyStatus === 'renewing') {
+                                    $statusBadge = '<span class="badge bg-warning text-dark">处理中</span>';
+                                } elseif ($applyStatus === 'failed') {
+                                    $statusBadge = '<span class="badge bg-danger">失败</span>';
+                                }
+                            ?>
+                                <tr>
+                                    <td><strong><?= htmlspecialchars((string)$c['domain'], ENT_QUOTES, 'UTF-8') ?></strong><br><small class="text-muted"><?= htmlspecialchars((string)($c['status_msg'] ?? ''), ENT_QUOTES, 'UTF-8') ?></small></td>
+                                    <td>
+                                        <?php if ((string)($c['mode'] ?? 'manual') === 'auto'): ?>
+                                            <span class="badge bg-primary">自动 API (<?= htmlspecialchars((string)($c['provider'] ?: 'cloudflare'), ENT_QUOTES, 'UTF-8') ?>)</span>
+                                        <?php else: ?>
+                                            <span class="badge bg-secondary">手动</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?= $statusBadge ?></td>
+                                    <td><?= $days >= 0 ? ($days . ' 天') : '未签发' ?></td>
+                                    <td><?= (int)($c['auto_renew'] ?? 0) === 1 ? '✅ 自动' : '❌' ?></td>
+                                    <td>
+                                        <form method="post" onsubmit="return confirm('删除证书?');">
+                                            <input type="hidden" name="action" value="del_cert">
+                                            <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
+                                            <button class="btn btn-sm btn-link text-danger">删除</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="tab-pane fade" id="tab-dns">
@@ -604,6 +667,47 @@ foreach ($certsList as $certRow) {
     </div>
 </div>
 
+
+<div class="modal fade" id="addCertModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post">
+                <div class="modal-header"><h5 class="modal-title">申请 SSL 证书</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-body">
+                    <input type="hidden" name="action" value="apply_cert">
+                    <div class="mb-3">
+                        <label>域名</label>
+                        <input type="text" name="domain" class="form-control" placeholder="www.example.com" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">申请模式</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="mode" value="auto" id="modeAuto" checked>
+                            <label class="form-check-label" for="modeAuto">
+                                🤖 自动 API 模式 (推荐)
+                                <small class="d-block text-muted">需先在“DNS 配置”中设置好 Cloudflare 或 华为云 API。系统将自动添加 DNS 记录、验证、发证、续费。</small>
+                            </label>
+                        </div>
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="radio" name="mode" value="manual" id="modeManual">
+                            <label class="form-check-label" for="modeManual">
+                                ✋ 手动模式
+                                <small class="d-block text-muted">仅记录，需稍后手动上传证书内容。</small>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="auto_renew" id="autoRenew" checked>
+                        <label class="form-check-label" for="autoRenew">启用自动续费 (到期前 5 天)</label>
+                    </div>
+                </div>
+                <div class="modal-footer"><button class="btn btn-primary">提交申请</button></div>
+            </form>
+        </div>
+    </div>
+</div>
 <div class="modal fade" id="addNodeModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form method="post"><div class="modal-header"><h5 class="modal-title">新增节点</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><input type="hidden" name="action" value="add_node"><div class="mb-2"><label>名称</label><input type="text" name="hostname" class="form-control" required></div><div class="mb-2"><label>IP</label><input type="text" name="ip" class="form-control" required></div></div><div class="modal-footer"><button class="btn btn-primary">确定</button></div></form></div></div></div>
 
 <script>
