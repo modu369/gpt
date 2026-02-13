@@ -245,6 +245,7 @@ func main() {
 				TrafficDown: down,
 				MaxBW:       hwCfg.MaxBW,
 				MaxRAM:      hwCfg.MaxRAM,
+				CPUCores:    hwCfg.CPUCores,
 			}); err != nil {
 				log.Printf("[Heartbeat] failed: %v", err)
 			}
