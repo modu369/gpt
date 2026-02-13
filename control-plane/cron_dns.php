@@ -1,5 +1,5 @@
 <?php
-// cron_dns.php - V5.0 旗舰版调度器 (CF + 华为云 + 全维度监控)
+// cron_dns.php - V5.1 流量熔断增强版
 require_once __DIR__ . '/db.php';
 
 // === 配置获取 ===
@@ -95,14 +95,32 @@ echo "[" . date('H:i:s') . "] 开始智能调度...\n";
 $nodes = $pdo->query("SELECT * FROM nodes WHERE status=1")->fetchAll();
 $candidates = [];
 
-// A. 硬性筛选
+// A. 硬性筛选 (在线检查 + 流量熔断)
 foreach ($nodes as $n) {
-    if (time() - (int)$n['last_heartbeat'] > 60) {
+    // 1. 离线检查
+    if (time() - (int)$n['last_heartbeat'] > 65) {
+        echo "节点 {$n['hostname']} 离线，跳过。\n";
         continue;
     }
-    if ((int)$n['traffic_limit'] > 0 && (float)$n['traffic_used'] > (int)$n['traffic_limit'] * 1073741824 * 0.95) {
-        continue;
+
+    // 2. 流量熔断检查
+    if ((int)($n['traffic_limit_enable'] ?? 0) === 1 && (int)$n['traffic_limit'] > 0) {
+        $limitBytes = (int)$n['traffic_limit'] * 1073741824;
+        $usedBytes = (float)$n['traffic_used'];
+        $thresholdPct = (int)($n['traffic_alert_pct'] ?? 5);
+        if ($thresholdPct <= 0) {
+            $thresholdPct = 5;
+        }
+
+        $usedPct = ($usedBytes / max(1, $limitBytes)) * 100;
+        $remainPct = 100 - $usedPct;
+
+        if ($remainPct < $thresholdPct) {
+            echo "节点 {$n['hostname']} 流量不足 (剩余 " . round($remainPct, 2) . "%)，暂停解析。\n";
+            continue;
+        }
     }
+
     $candidates[] = $n;
 }
 

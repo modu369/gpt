@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS `nodes` (
   `cpu_usage` float DEFAULT 0 COMMENT 'CPU占用率',
   `ram_usage` float DEFAULT 0 COMMENT '内存占用率',
   `traffic_limit` int(11) DEFAULT 0 COMMENT '流量限制(GB)',
+  `traffic_limit_enable` tinyint DEFAULT 0 COMMENT '流量限制开关',
+  `traffic_count_mode` tinyint DEFAULT 0 COMMENT '0双向 1单向',
+  `traffic_alert_pct` int DEFAULT 5 COMMENT '剩余流量暂停阈值%',
   `traffic_used` bigint(20) DEFAULT 0 COMMENT '已用流量(Bytes)',
   `current_bandwidth` int(11) DEFAULT 0 COMMENT '当前实时带宽(Mbps)',
   `max_bandwidth` int(11) DEFAULT 0 COMMENT '最大带宽(Mbps)',
@@ -70,8 +73,8 @@ CREATE TABLE IF NOT EXISTS `certificates` (
   UNIQUE KEY `domain` (`domain`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_used`, `current_bandwidth`, `max_bandwidth`, `max_ram`, `weight`)
-VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0, 0, 0, 0, 0, 0, 100);
+INSERT IGNORE INTO `nodes` (`id`, `hostname`, `ip_address`, `secret_key`, `status`, `last_heartbeat`, `cpu_usage`, `ram_usage`, `traffic_limit`, `traffic_limit_enable`, `traffic_count_mode`, `traffic_alert_pct`, `traffic_used`, `current_bandwidth`, `max_bandwidth`, `max_ram`, `weight`)
+VALUES (1, 'Node-01-US', '1.2.3.4', 'my-secret-token-123', 1, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 100);
 
 INSERT IGNORE INTO `domains` (`id`, `domain`, `node_group_id`, `ssl_status`)
 VALUES (1, 'test.yourdomain.com', 0, 0), (2, 'api.client.com', 0, 0);
@@ -114,3 +117,4 @@ CREATE TABLE IF NOT EXISTS `node_alerts` (
   `is_read` tinyint DEFAULT 0 COMMENT '0未读 1已读',
   `created_at` timestamp DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+

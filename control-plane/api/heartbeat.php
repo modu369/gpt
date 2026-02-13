@@ -24,9 +24,7 @@ $up = isset($input['traffic_up']) ? (int)$input['traffic_up'] : 0;
 $down = isset($input['traffic_down']) ? (int)$input['traffic_down'] : 0;
 $maxBW = isset($input['max_bw']) ? (int)$input['max_bw'] : 0;
 $maxRAM = isset($input['max_ram']) ? (int)$input['max_ram'] : 0;
-$trafficInc = max(0, $up) + max(0, $down);
-
-$nodeStmt = $pdo->prepare('SELECT id, last_heartbeat FROM nodes WHERE secret_key = ? LIMIT 1');
+$nodeStmt = $pdo->prepare('SELECT id, last_heartbeat, traffic_count_mode FROM nodes WHERE secret_key = ? LIMIT 1');
 $nodeStmt->execute([$secret]);
 $node = $nodeStmt->fetch();
 
@@ -36,10 +34,18 @@ if (!$node) {
     exit;
 }
 
+$trafficInc = 0;
+if ((int)($node['traffic_count_mode'] ?? 0) === 1) {
+    $trafficInc = max(0, $down);
+} else {
+    $trafficInc = max(0, $up) + max(0, $down);
+}
+
 $currentTime = time();
 $lastTime = (int)($node['last_heartbeat'] ?? 0);
 $timeDiff = max(1, $currentTime - $lastTime);
-$currentBandwidth = (int)round(($trafficInc * 8) / 1000 / 1000 / $timeDiff);
+$totalThroughput = max(0, $up) + max(0, $down);
+$currentBandwidth = (int)round(($totalThroughput * 8) / 1000 / 1000 / $timeDiff);
 
 $sql = 'UPDATE nodes SET last_heartbeat = ?, cpu_usage = ?, ram_usage = ?, traffic_used = traffic_used + ?, current_bandwidth = ?';
 $params = [$currentTime, $cpu, $ram, $trafficInc, $currentBandwidth];

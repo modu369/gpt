@@ -1,10 +1,10 @@
 <?php
 /**
- * admin.php - 旗舰版 V4.3 (最终修复版)
+ * admin.php - 旗舰版 V5.0 (流量策略增强版)
  * * 变更日志：
- * 1. [修复] 节点安装命令中补全 /api 路径，解决被控端 404 问题。
- * 2. [修复] 增加 PRG (Post-Redirect-Get) 机制，彻底解决刷新页面重复提交表单的问题。
- * 3. [修复] 优化重定向 URL 生成策略，解决部分 Nginx 环境下 Tab 标签无法保持的问题。
+ * 1. [新增] 流量限制开关、单/双向计费选择、自动暂停阈值。
+ * 2. [移除] 手动内存设置 (由被控端自动上报)。
+ * 3. [保留] PRG 模式、404 修复、安装命令 /api 修复。
  */
 
 session_start();
@@ -115,9 +115,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         elseif ($action === 'update_node_config') {
             $id = intval($_POST['id']);
-            $pdo->prepare("UPDATE nodes SET traffic_limit=?, weight=?, max_bandwidth=?, max_ram=? WHERE id=?")
-                ->execute([$_POST['traffic_limit'], $_POST['weight'], $_POST['max_bandwidth'], $_POST['max_ram'], $id]);
-            $temp_msg = "<div class='alert alert-success'>节点配置已保存</div>";
+            $traffic_enable = isset($_POST['traffic_limit_enable']) ? 1 : 0;
+            $pdo->prepare("UPDATE nodes SET weight=?, max_bandwidth=?, traffic_limit=?, traffic_limit_enable=?, traffic_count_mode=?, traffic_alert_pct=? WHERE id=?")
+                ->execute([
+                    intval($_POST['weight'] ?? 0),
+                    intval($_POST['max_bandwidth'] ?? 0),
+                    intval($_POST['traffic_limit'] ?? 0),
+                    $traffic_enable,
+                    intval($_POST['traffic_count_mode'] ?? 0),
+                    max(1, intval($_POST['traffic_alert_pct'] ?? 5)),
+                    $id
+                ]);
+            $temp_msg = "<div class='alert alert-success'>节点策略已更新</div>";
         }
         
         // --- IP 池管理 ---
@@ -314,13 +323,18 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                             $nodes = $pdo->query("SELECT * FROM nodes ORDER BY id DESC")->fetchAll();
                             foreach($nodes as $node):
                                 $is_online = (time()-$node['last_heartbeat'])<65;
-                                // [修复] 补全 /api 路径，解决 404 问题
                                 $cmd = "wget -O install_node.sh {$master_url}/install_node.sh && chmod +x install_node.sh && ./install_node.sh -master {$master_url}/api -secret {$node['secret_key']}";
+                                $limit_gb = (int)($node['traffic_limit'] ?? 0);
+                                $used_gb = round(((float)$node['traffic_used'])/1073741824, 2);
+                                $pct = ($limit_gb > 0) ? round(($used_gb / $limit_gb) * 100, 1) : 0;
+                                $threshold_pct = max(1, (int)($node['traffic_alert_pct'] ?? 5));
+                                $is_paused = ((int)($node['traffic_limit_enable'] ?? 0) === 1 && $limit_gb > 0 && (100 - $pct) < $threshold_pct);
                             ?>
-                            <tr>
+                            <tr class="<?= $is_paused ? 'table-warning' : '' ?>">
                                 <td>
                                     <span class="status-dot <?= $is_online?'bg-online':'bg-offline' ?>"></span>
                                     <?= $is_online ? '<span class="text-success small">在线</span>' : '<span class="text-danger small">离线</span>' ?>
+                                    <?php if($is_paused): ?><br><span class="badge bg-warning text-dark">流量耗尽</span><?php endif; ?>
                                 </td>
                                 <td>
                                     <strong><?= htmlspecialchars($node['hostname']) ?></strong><br>
@@ -329,36 +343,60 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                                 </td>
                                 <td>
                                     <div class="small">CPU: <span class="<?= $node['cpu_usage']>80?'text-danger':'' ?>"><?= $node['cpu_usage'] ?>%</span></div>
-                                    <div class="small">RAM: <?= $node['ram_usage'] ?> MB</div>
+                                    <div class="small">RAM: <?= $node['ram_usage'] ?> / <?= $node['max_ram'] ?: '?' ?> MB</div>
                                 </td>
                                 <td>
-                                    <div class="small">已用: <?= round($node['traffic_used']/1073741824,2) ?> GB</div>
+                                    <div class="small">已用: <?= $used_gb ?> GB</div>
+                                    <?php if((int)($node['traffic_limit_enable'] ?? 0) === 1): ?>
+                                        <div class="progress" style="height:5px; width:110px;">
+                                            <div class="progress-bar <?= $pct>90?'bg-danger':'' ?>" style="width: <?= min(100, $pct) ?>%"></div>
+                                        </div>
+                                        <small class="text-muted">限额: <?= $limit_gb ?> GB</small>
+                                    <?php else: ?>
+                                        <small class="text-muted">无限制</small>
+                                    <?php endif; ?>
                                     <div class="small text-muted">带宽: <?= $node['current_bandwidth'] ?> Mbps</div>
                                 </td>
-                                <td style="min-width: 250px;">
-                                    <form method="post" class="row g-1">
+                                <td style="min-width: 360px;">
+                                    <form method="post" class="row g-2 align-items-center">
                                         <input type="hidden" name="tab" value="nodes">
                                         <input type="hidden" name="action" value="update_node_config">
                                         <input type="hidden" name="id" value="<?= $node['id'] ?>">
-                                        <div class="col-4">
-                                            <div class="input-group input-group-sm" title="调度权重 (0-100)">
-                                                <span class="input-group-text px-1">权重</span>
-                                                <input type="number" name="weight" value="<?= $node['weight'] ?>" class="form-control px-1 text-center" placeholder="0-100">
+                                        <div class="col-6">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">权重</span>
+                                                <input type="number" name="weight" value="<?= $node['weight'] ?>" class="form-control text-center">
                                             </div>
                                         </div>
-                                        <div class="col-4">
-                                            <div class="input-group input-group-sm" title="带宽熔断阈值 (Mbps)">
-                                                <span class="input-group-text px-1">限速</span>
-                                                <input type="number" name="max_bandwidth" value="<?= $node['max_bandwidth'] ?>" class="form-control px-1 text-center" placeholder="Mbps">
+                                        <div class="col-6">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">限速Mbps</span>
+                                                <input type="number" name="max_bandwidth" value="<?= $node['max_bandwidth'] ?>" class="form-control text-center">
                                             </div>
                                         </div>
-                                        <div class="col-4">
-                                            <div class="input-group input-group-sm" title="内存保护阈值 (MB)">
-                                                <span class="input-group-text px-1">内存</span>
-                                                <input type="number" name="max_ram" value="<?= $node['max_ram'] ?>" class="form-control px-1 text-center" placeholder="MB">
+                                        <div class="col-12 d-flex gap-2 align-items-center bg-light p-1 rounded border">
+                                            <div class="form-check form-switch mb-0">
+                                                <input class="form-check-input" type="checkbox" name="traffic_limit_enable" value="1" <?= (int)($node['traffic_limit_enable'] ?? 0) === 1 ? 'checked' : '' ?>>
+                                                <label class="form-check-label small">开启流控</label>
+                                            </div>
+                                            <select name="traffic_count_mode" class="form-select form-select-sm py-0" style="width:auto">
+                                                <option value="0" <?= (int)($node['traffic_count_mode'] ?? 0)===0?'selected':'' ?>>双向计费 (进+出)</option>
+                                                <option value="1" <?= (int)($node['traffic_count_mode'] ?? 0)===1?'selected':'' ?>>单向计费 (仅出)</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-7">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">月流量GB</span>
+                                                <input type="number" name="traffic_limit" value="<?= $node['traffic_limit'] ?>" class="form-control text-center">
                                             </div>
                                         </div>
-                                        <div class="col-12 mt-1"><button class="btn btn-sm btn-outline-secondary w-100" style="--bs-btn-padding-y: .25rem;">保存配置</button></div>
+                                        <div class="col-5">
+                                            <div class="input-group input-group-sm" title="剩余流量低于此百分比时自动暂停">
+                                                <span class="input-group-text">阈值%</span>
+                                                <input type="number" name="traffic_alert_pct" value="<?= $node['traffic_alert_pct'] ?? 5 ?>" class="form-control text-center">
+                                            </div>
+                                        </div>
+                                        <div class="col-12"><button class="btn btn-sm btn-outline-primary w-100">💾 保存策略</button></div>
                                     </form>
                                 </td>
                                 <td>
