@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS `nodes` (
   `max_bandwidth` int(11) DEFAULT 0 COMMENT '最大带宽(Mbps)',
   `max_ram` int(11) DEFAULT 0 COMMENT '内存上限(MB)',
   `weight` int(11) DEFAULT 100 COMMENT '调度权重(0-100)',
+  `traffic_limit` int(11) DEFAULT 0 COMMENT '流量限制(GB)',
+  `traffic_limit_enable` tinyint DEFAULT 0 COMMENT '流量限制开关',
+  `traffic_count_mode` tinyint DEFAULT 0 COMMENT '0双向 1单向',
+  `traffic_alert_pct` int DEFAULT 5 COMMENT '剩余流量暂停阈值%',
   PRIMARY KEY (`id`),
   UNIQUE KEY `secret_key` (`secret_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
