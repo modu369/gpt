@@ -1,11 +1,11 @@
 <?php
 /**
- * admin.php - 旗舰版 V6.4 (修复输入框被自动刷新重置的问题)
+ * admin.php - 旗舰版 V6.7 (IP检测优化：自动记忆测试域名)
  * * 包含功能：
  * 1. 节点管理：显示 CPU 核心数、最大带宽上限。
- * 2. 交互修复：用户输入时暂停自动刷新，防止输入内容丢失。
- * 3. 完整模块：IP池、域名、DNS配置、告警中心、系统设置。
- * 4. 体验优化：自动刷新、PRG防重提交、Tab参数保持。
+ * 2. 交互修复：用户输入时暂停自动刷新。
+ * 3. IP 管理：支持删除监控 IP，检测域名自动记忆，不再强制关联调度域名。
+ * 4. 完整模块：域名、DNS配置、告警中心、系统设置。
  */
 
 session_start();
@@ -24,6 +24,43 @@ function trigger_cert_cron(): void {
     $php = PHP_BINARY ?: '/usr/bin/php';
     $cmd = 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' >/dev/null 2>&1 &';
     exec($cmd);
+}
+
+// IP 检测函数
+function check_cf_ip_health($ip, $domain) {
+    if (empty($ip) || empty($domain)) return ['status' => false, 'msg' => '参数错误'];
+    
+    $ch = curl_init();
+    $url = "https://{$domain}/";
+    
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HEADER, true);
+    curl_setopt($ch, CURLOPT_NOBODY, true); // HEAD 请求
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3); // 连接超时 3秒
+    curl_setopt($ch, CURLOPT_TIMEOUT, 3);
+    
+    // 强制解析到指定 IP
+    curl_setopt($ch, CURLOPT_RESOLVE, ["{$domain}:443:{$ip}"]);
+    
+    // 不验证证书链 (仅验证能否握手)
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0); 
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; CFCheck/1.0)');
+
+    $start = microtime(true);
+    $response = curl_exec($ch);
+    $duration = round((microtime(true) - $start) * 1000);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    // 判断逻辑：无报错且状态码正常 (非 0/409/522)
+    if (!$error && $httpCode > 0 && $httpCode != 409 && $httpCode != 522) {
+        return ['status' => true, 'latency' => $duration, 'code' => $httpCode];
+    } else {
+        return ['status' => false, 'error' => $error ?: "HTTP $httpCode"];
+    }
 }
 
 $CONF_USER = get_setting($pdo, 'admin_user', 'admin');
@@ -61,6 +98,7 @@ if (!isset($_SESSION['is_admin'])) {
 
 // ================= 业务逻辑处理 =================
 $message = '';
+$check_results = []; // 存储检测结果
 $active_tab = $_GET['tab'] ?? 'nodes';
 
 if (isset($_SESSION['flash_msg'])) {
@@ -125,9 +163,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $raw_ips = preg_split('/[\r\n,]+/', $_POST['cf_ips_list']);
             $ips = array_filter(array_unique($raw_ips), function($ip){ return filter_var(trim($ip), FILTER_VALIDATE_IP); });
             if(empty($ips)) $ips = ["1.0.0.1"];
+            
             $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('cf_ips', ?)")->execute([json_encode(array_values($ips))]);
-            $pdo->prepare("INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES (?)")->execute([implode("'),('", $ips)]);
+            $stmt = $pdo->prepare("INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES (?)");
+            foreach ($ips as $ip) { $stmt->execute([$ip]); }
+            
             $temp_msg = "<div class='alert alert-success'>IP 池已更新</div>";
+        }
+        elseif ($action === 'del_ip') {
+            $id = intval($_POST['id']);
+            $stmt = $pdo->prepare("SELECT ip_address FROM cf_ip_pool WHERE id=?");
+            $stmt->execute([$id]);
+            $del_ip = $stmt->fetchColumn();
+            
+            if ($del_ip) {
+                $pdo->prepare("DELETE FROM cf_ip_pool WHERE id=?")->execute([$id]);
+                $saved_ips = get_setting($pdo, 'cf_ips', []);
+                if (is_array($saved_ips)) {
+                    $new_ips = array_values(array_filter($saved_ips, function($ip) use ($del_ip) { return $ip !== $del_ip; }));
+                    $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('cf_ips', ?)")->execute([json_encode($new_ips)]);
+                }
+                $temp_msg = "<div class='alert alert-success'>IP {$del_ip} 已移除</div>";
+            }
+        }
+        
+        // [修改] 批量检测 IP (包含记忆功能)
+        elseif ($action === 'check_ips') {
+            $check_domain = trim($_POST['check_domain']);
+            $raw_ips = preg_split('/[\r\n,]+/', $_POST['check_ips_list']);
+            $ips_to_check = array_filter(array_unique($raw_ips), function($ip){ return filter_var(trim($ip), FILTER_VALIDATE_IP); });
+            
+            // [新增] 自动记忆用户输入的测试域名
+            if (!empty($check_domain)) {
+                $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('check_ip_domain', ?)")
+                    ->execute([json_encode($check_domain)]);
+            }
+
+            if (empty($check_domain) || empty($ips_to_check)) {
+                $temp_msg = "<div class='alert alert-warning'>请输入检测域名和 IP 列表</div>";
+            } else {
+                foreach ($ips_to_check as $ip) {
+                    $check_results[$ip] = check_cf_ip_health($ip, $check_domain);
+                }
+                $active_tab = 'ips'; // 保持在 IP 页
+            }
         }
         
         // --- DNS 配置 ---
@@ -197,9 +276,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (!empty($temp_msg)) $_SESSION['flash_msg'] = $temp_msg;
-    // 使用 SCRIPT_NAME 确保跳转正确
-    header("Location: " . $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab);
-    exit;
+    if (empty($check_results)) { 
+        header("Location: " . $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab);
+        exit;
+    }
 }
 
 // ================= 数据查询 =================
@@ -402,8 +482,8 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
 
         <div class="tab-pane <?= $active_tab=='ips'?'active':'fade' ?>" id="tab-ips">
             <div class="row">
-                <div class="col-md-5">
-                    <div class="card h-100">
+                <div class="col-md-4">
+                    <div class="card mb-3">
                         <div class="card-header bg-primary text-white"><i class="bi bi-pencil-square"></i> IP 池配置</div>
                         <div class="card-body">
                             <form method="post">
@@ -414,13 +494,50 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                             </form>
                         </div>
                     </div>
+                    
+                    <div class="card">
+                        <div class="card-header bg-success text-white"><i class="bi bi-speedometer2"></i> IP 可用性预检</div>
+                        <div class="card-body">
+                            <form method="post">
+                                <input type="hidden" name="tab" value="ips">
+                                <input type="hidden" name="action" value="check_ips">
+                                <div class="mb-2">
+                                    <label class="form-label small">测试域名 (需已CNAME到CF)</label>
+                                    <input type="text" name="check_domain" class="form-control form-control-sm" value="<?= htmlspecialchars(get_setting($pdo,'check_ip_domain','')) ?>" placeholder="cdn.example.com" required>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">待测 IP (每行一个)</label>
+                                    <textarea name="check_ips_list" class="form-control form-control-sm font-monospace" rows="5"></textarea>
+                                </div>
+                                <button class="btn btn-sm btn-success w-100"><i class="bi bi-search"></i> 开始检测</button>
+                            </form>
+                            <?php if(!empty($check_results)): ?>
+                            <div class="mt-3 border-top pt-2">
+                                <h6>检测结果:</h6>
+                                <ul class="list-group list-group-flush small">
+                                    <?php foreach($check_results as $ip => $res): ?>
+                                    <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                        <span class="font-monospace"><?= $ip ?></span>
+                                        <?php if($res['status']): ?>
+                                            <span class="badge bg-success">✅ <?= $res['code'] ?> (<?= $res['latency'] ?>ms)</span>
+                                        <?php else: ?>
+                                            <span class="badge bg-danger">❌ <?= htmlspecialchars($res['error']) ?></span>
+                                        <?php endif; ?>
+                                    </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
                 </div>
-                <div class="col-md-7">
+                
+                <div class="col-md-8">
                     <div class="card h-100">
                         <div class="card-header"><i class="bi bi-activity"></i> IP 实时监控状态</div>
                         <div class="card-body table-responsive">
-                            <table class="table table-sm table-striped">
-                                <thead><tr><th>IP 地址</th><th>状态</th><th>延迟</th><th>连败</th><th>最后检测</th></tr></thead>
+                            <table class="table table-sm table-striped align-middle">
+                                <thead><tr><th>IP 地址</th><th>状态</th><th>延迟</th><th>连败</th><th>最后检测</th><th>操作</th></tr></thead>
                                 <tbody>
                                     <?php
                                     $pool = $pdo->query("SELECT * FROM cf_ip_pool ORDER BY status DESC, latency ASC")->fetchAll();
@@ -432,6 +549,14 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                                         <td><?= $p['latency'] ?> ms</td>
                                         <td><?= $p['fail_count'] ?></td>
                                         <td class="small text-muted"><?= $p['last_check'] ? date('H:i:s', $p['last_check']) : '-' ?></td>
+                                        <td>
+                                            <form method="post" onsubmit="return confirm('确定移除该 IP 吗？');" class="d-inline">
+                                                <input type="hidden" name="tab" value="ips">
+                                                <input type="hidden" name="action" value="del_ip">
+                                                <input type="hidden" name="id" value="<?= $p['id'] ?>">
+                                                <button class="btn btn-sm btn-link text-danger p-0"><i class="bi bi-trash"></i></button>
+                                            </form>
+                                        </td>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -678,7 +803,7 @@ document.addEventListener("DOMContentLoaded", function() {
     if(activeTab === 'cert' || activeTab === 'nodes') {
         setInterval(() => {
             // [关键修复] 如果用户光标正在输入框或下拉框中，暂停自动刷新！
-            if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT')) {
+            if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'TEXTAREA')) {
                 // console.log('User typing, skipping refresh...');
                 return;
             }
