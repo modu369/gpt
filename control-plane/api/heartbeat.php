@@ -24,6 +24,7 @@ $up = isset($input['traffic_up']) ? (int)$input['traffic_up'] : 0;
 $down = isset($input['traffic_down']) ? (int)$input['traffic_down'] : 0;
 $maxBW = isset($input['max_bw']) ? (int)$input['max_bw'] : 0;
 $maxRAM = isset($input['max_ram']) ? (int)$input['max_ram'] : 0;
+$cpuCores = isset($input['cpu_cores']) ? (int)$input['cpu_cores'] : 0;
 $nodeStmt = $pdo->prepare('SELECT id, last_heartbeat, traffic_count_mode FROM nodes WHERE secret_key = ? LIMIT 1');
 $nodeStmt->execute([$secret]);
 $node = $nodeStmt->fetch();
@@ -56,6 +57,10 @@ if ($maxBW > 0) {
 if ($maxRAM > 0) {
     $sql .= ', max_ram = IF(max_ram = 0, ?, max_ram)';
     $params[] = $maxRAM;
+}
+if ($cpuCores > 0) {
+    $sql .= ', cpu_cores = IF(cpu_cores = 0, ?, cpu_cores)';
+    $params[] = $cpuCores;
 }
 $sql .= ' WHERE id = ?';
 $params[] = (int)$node['id'];
