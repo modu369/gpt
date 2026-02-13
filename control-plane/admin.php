@@ -1,11 +1,12 @@
 <?php
 /**
- * admin.php - 旗舰版 V6.2 (UI 增强版)
+ * admin.php - 旗舰版 V6.3 (修复 Tab 切换与 Nginx 兼容性)
  * * 包含功能：
  * 1. 节点管理：显示 CPU 核心数、最大带宽上限。
  * 2. SSL证书：支持 Let's Encrypt/ZeroSSL 切换，强制续费。
  * 3. 完整模块：IP池、域名、DNS配置、告警中心、系统设置。
  * 4. 体验优化：自动刷新、PRG防重提交。
+ * 5. 修复：Tab 链接显式指向脚本文件，解决 Nginx try_files 吞参问题。
  */
 
 session_start();
@@ -197,6 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (!empty($temp_msg)) $_SESSION['flash_msg'] = $temp_msg;
+    // 使用 SCRIPT_NAME 确保跳转正确
     header("Location: " . $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab);
     exit;
 }
@@ -271,13 +273,13 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
     <?= $message ?>
 
     <ul class="nav nav-tabs mb-3" id="mainTab" role="tablist">
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='nodes'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=nodes"><i class="bi bi-hdd-network"></i> 监控与节点</a></li>
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='ips'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=ips"><i class="bi bi-clouds"></i> 中转网络</a></li>
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='domains'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=domains"><i class="bi bi-globe"></i> 域名管理</a></li>
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='dns'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=dns"><i class="bi bi-gear"></i> DNS 配置</a></li>
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='cert'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=cert"><i class="bi bi-shield-lock"></i> SSL 证书</a></li>
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='alerts'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=alerts"><i class="bi bi-bell"></i> 告警中心</a></li>
-        <li class="nav-item"><a class="nav-link <?= $active_tab=='settings'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=settings"><i class="bi bi-gear-wide-connected"></i> 系统设置</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='nodes'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=nodes"><i class="bi bi-hdd-network"></i> 监控与节点</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='ips'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=ips"><i class="bi bi-clouds"></i> 中转网络</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='domains'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=domains"><i class="bi bi-globe"></i> 域名管理</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='dns'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=dns"><i class="bi bi-gear"></i> DNS 配置</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='cert'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=cert"><i class="bi bi-shield-lock"></i> SSL 证书</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='alerts'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=alerts"><i class="bi bi-bell"></i> 告警中心</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='settings'?'active':'' ?>" href="<?= $_SERVER['SCRIPT_NAME'] ?>?slug=<?= $CONF_SLUG ?>&tab=settings"><i class="bi bi-gear-wide-connected"></i> 系统设置</a></li>
     </ul>
 
     <div class="tab-content">
