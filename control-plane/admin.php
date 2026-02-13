@@ -1,12 +1,11 @@
 <?php
 /**
- * admin.php - 旗舰版 V6.3 (修复 Tab 切换与 Nginx 兼容性)
+ * admin.php - 旗舰版 V6.4 (修复输入框被自动刷新重置的问题)
  * * 包含功能：
  * 1. 节点管理：显示 CPU 核心数、最大带宽上限。
- * 2. SSL证书：支持 Let's Encrypt/ZeroSSL 切换，强制续费。
+ * 2. 交互修复：用户输入时暂停自动刷新，防止输入内容丢失。
  * 3. 完整模块：IP池、域名、DNS配置、告警中心、系统设置。
- * 4. 体验优化：自动刷新、PRG防重提交。
- * 5. 修复：Tab 链接显式指向脚本文件，解决 Nginx try_files 吞参问题。
+ * 4. 体验优化：自动刷新、PRG防重提交、Tab参数保持。
  */
 
 session_start();
@@ -678,6 +677,12 @@ document.addEventListener("DOMContentLoaded", function() {
     // [新增] 自动刷新逻辑 (只刷新列表内容)
     if(activeTab === 'cert' || activeTab === 'nodes') {
         setInterval(() => {
+            // [关键修复] 如果用户光标正在输入框或下拉框中，暂停自动刷新！
+            if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT')) {
+                // console.log('User typing, skipping refresh...');
+                return;
+            }
+
             fetch(window.location.href)
             .then(r => r.text())
             .then(html => {
