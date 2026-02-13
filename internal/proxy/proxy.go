@@ -20,7 +20,7 @@ type contextKey string
 
 const sniContextKey contextKey = "upstream_sni"
 
-// 统计流量的 Writer
+// countingResponseWriter 用于捕获下行流量字节数
 type countingResponseWriter struct {
 	http.ResponseWriter
 	down *atomic.Uint64
@@ -29,21 +29,24 @@ type countingResponseWriter struct {
 func (w *countingResponseWriter) Write(b []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(b)
 	if n > 0 {
-		w.down.Add(uint64(n))
+		w.down.Add(uint64(n)) // 累加下载流量
 	}
 	return n, err
 }
 
 type Engine struct {
 	manager *config.Manager
+
 	rr atomic.Uint64
+
 	transport http.RoundTripper
+
 	upTraffic   atomic.Uint64
 	downTraffic atomic.Uint64
 }
 
+// New 创建代理引擎，保留原系统的 Transport 配置和动态 SNI 处理逻辑
 func New(manager *config.Manager) *Engine {
-	// 自定义 Transport 以支持动态 SNI (多域名支持)
 	base := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -51,7 +54,6 @@ func New(manager *config.Manager) *Engine {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// 从 Context 获取当前请求的域名
 			serverName, _ := ctx.Value(sniContextKey).(string)
 			if serverName == "" {
 				return nil, fmt.Errorf("missing SNI in context")
@@ -63,11 +65,11 @@ func New(manager *config.Manager) *Engine {
 				return nil, err
 			}
 
-			// 关键：针对当前域名进行握手，跳过 IP 证书校验
+			// 企业版穿透建议维持 TLS 1.2+ 握手
 			tlsConn := tls.Client(raw, &tls.Config{
 				ServerName:         serverName,
 				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: true, // CF 边缘 IP 证书通用，需跳过校验
+				InsecureSkipVerify: true, // 必须跳过以支持直连 CF 边缘 IP
 			})
 			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				_ = raw.Close()
@@ -88,11 +90,11 @@ func New(manager *config.Manager) *Engine {
 type transportWithSNI struct{ base *http.Transport }
 
 func (t *transportWithSNI) RoundTrip(req *http.Request) (*http.Response, error) {
-	// 将 Host 注入 Context 供 DialTLSContext 使用
 	cloned := req.Clone(context.WithValue(req.Context(), sniContextKey, normalizeHost(req.Host)))
 	return t.base.RoundTrip(cloned)
 }
 
+// Handler 处理请求，集成 True-Client-IP 穿透逻辑
 func (e *Engine) Handler() http.Handler {
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -102,26 +104,28 @@ func (e *Engine) Handler() http.Handler {
 			// 统计上行流量
 			e.upTraffic.Add(estimateRequestBytes(req))
 
-			// 设置后端目标 (HTTPS -> Cloudflare IP)
+			// 设置转发目标为 Cloudflare 边缘节点
 			req.URL = &url.URL{
-				Scheme: "https", 
-				Host: net.JoinHostPort(cfIP, "443"), 
-				Path: req.URL.Path, 
-				RawPath: req.URL.RawPath, 
+				Scheme:   "https",
+				Host:     net.JoinHostPort(cfIP, "443"),
+				Path:     req.URL.Path,
+				RawPath:  req.URL.RawPath,
 				RawQuery: req.URL.RawQuery,
 			}
-			
-			// 1. 强制 Host 头 (回源关键)
 			req.Host = host
 			req.Header.Set("Host", host)
 			req.Header.Set("X-Forwarded-Host", host)
 
-			// 2. [核心修复] 透传真实客户端 IP
-			// 即使没有 User-Agent，IP 也要透传，否则源站无法风控
+			// 获取原始客户端 IP
 			clientIP := clientIP(req.RemoteAddr)
-			req.Header.Set("X-Real-IP", clientIP)
+
+			// ==========================================
+			// [新增] Cloudflare Enterprise 企业版穿透核心头部
+			// ==========================================
+			req.Header.Set("True-Client-IP", clientIP) 
 			
-			// 追加模式设置 X-Forwarded-For
+			// 维持标准的 Real-IP 和 Forwarded-For 透传
+			req.Header.Set("X-Real-IP", clientIP)
 			prior := req.Header.Get("X-Forwarded-For")
 			if prior != "" {
 				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
@@ -129,17 +133,11 @@ func (e *Engine) Handler() http.Handler {
 				req.Header.Set("X-Forwarded-For", clientIP)
 			}
 
-			// 3. 原封不动转发 User-Agent (已移除伪装逻辑)
-			// Go 的 ReverseProxy 默认会保留客户端原始 Header
-			// 如果客户端没发 UA，这里也不会发，完全透明。
-
-			// 4. 设置协议头
 			if req.TLS != nil {
 				req.Header.Set("X-Forwarded-Proto", "https")
 			} else {
 				req.Header.Set("X-Forwarded-Proto", "http")
 			}
-			
 			log.Printf("[Proxy] host=%s cf_ip=%s remote=%s", host, cfIP, req.RemoteAddr)
 		},
 		Transport: e.transport,
@@ -151,6 +149,7 @@ func (e *Engine) Handler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := normalizeHost(r.Host)
+		// 域名白名单验证
 		if !e.isAllowed(host) {
 			log.Printf("[Block] host=%s remote=%s", host, r.RemoteAddr)
 			w.WriteHeader(http.StatusForbidden)
@@ -163,7 +162,7 @@ func (e *Engine) Handler() http.Handler {
 	})
 }
 
-// 获取并重置流量计数
+// ConsumeTraffic 原子交换并获取流量统计，供 main.go 的心跳使用
 func (e *Engine) ConsumeTraffic() (up uint64, down uint64) {
 	up = e.upTraffic.Swap(0)
 	down = e.downTraffic.Swap(0)
