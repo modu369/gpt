@@ -1,16 +1,17 @@
 <?php
 /**
- * admin.php - 旗舰版 V5.0 (流量策略增强版)
- * * 变更日志：
- * 1. [新增] 流量限制开关、单/双向计费选择、自动暂停阈值。
- * 2. [移除] 手动内存设置 (由被控端自动上报)。
- * 3. [保留] PRG 模式、404 修复、安装命令 /api 修复。
+ * admin.php - 旗舰版 V6.1 (完整无缺漏版)
+ * * 包含功能：
+ * 1. 节点管理：流量限制、自动暂停、硬件自动发现。
+ * 2. SSL证书：支持 Let's Encrypt/ZeroSSL 切换，强制续费。
+ * 3. 完整模块：IP池、域名、DNS配置、告警中心、系统设置。
+ * 4. 体验优化：自动刷新、PRG防重提交。
  */
 
 session_start();
 require_once 'db.php';
 
-// ================= 1. 配置获取与安全入口校验 =================
+// ================= 基础函数 =================
 function get_setting($pdo, $key, $default) {
     $stmt = $pdo->prepare("SELECT value_json FROM settings WHERE key_name = ?");
     $stmt->execute([$key]); 
@@ -18,19 +19,25 @@ function get_setting($pdo, $key, $default) {
     return $val ? json_decode($val, true) : $default;
 }
 
+function trigger_cert_cron(): void {
+    $script = __DIR__ . '/cron_cert.php';
+    $php = PHP_BINARY ?: '/usr/bin/php';
+    $cmd = 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' >/dev/null 2>&1 &';
+    exec($cmd);
+}
+
 $CONF_USER = get_setting($pdo, 'admin_user', 'admin');
 $CONF_PASS = get_setting($pdo, 'admin_pass', 'admin123');
 $CONF_SLUG = get_setting($pdo, 'admin_slug', 'yun123');
 
-// 退出登录逻辑
+// 退出登录
 if (isset($_GET['logout'])) {
     session_destroy();
-    // 退出后重定向回安全入口
     header("Location: " . $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG);
     exit;
 }
 
-// 安全入口隐藏逻辑 (防扫描)
+// 安全入口校验
 $request_uri = $_SERVER['REQUEST_URI'];
 $url_slug = $_GET['slug'] ?? '';
 if (!isset($_SESSION['is_admin']) && strpos($request_uri, $CONF_SLUG) === false && $url_slug !== $CONF_SLUG) {
@@ -39,44 +46,23 @@ if (!isset($_SESSION['is_admin']) && strpos($request_uri, $CONF_SLUG) === false 
     exit;
 }
 
-// ================= 2. 登录鉴权 =================
+// 登录鉴权
 if (!isset($_SESSION['is_admin'])) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['username']??'') === $CONF_USER && ($_POST['password']??'') === $CONF_PASS) {
         $_SESSION['is_admin'] = true; 
-        // 登录成功后跳转，防止刷新重发 POST
         header("Location: " . $_SERVER['REQUEST_URI']); 
         exit;
     }
-    // 登录界面
     ?>
-    <!DOCTYPE html>
-    <html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8">
-        <title>登录 - CDN 控制台</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <style>body{background-color:#f5f5f5;display:flex;align-items:center;padding-top:40px;padding-bottom:40px;height:100vh;}.form-signin{width:100%;max-width:330px;padding:15px;margin:auto;}</style>
-    </head>
-    <body class="text-center">
-        <main class="form-signin">
-            <form method="post">
-                <h1 class="h3 mb-3 fw-normal">CDN 管理后台</h1>
-                <input type="text" name="username" class="form-control mb-2" placeholder="用户名" required autofocus>
-                <input type="password" name="password" class="form-control mb-3" placeholder="密码" required>
-                <button class="w-100 btn btn-lg btn-primary" type="submit">登录</button>
-            </form>
-        </main>
-    </body>
-    </html>
+    <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Login</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>body{display:flex;align-items:center;padding-top:40px;height:100vh;background:#f5f5f5}.form-signin{width:100%;max-width:330px;margin:auto;padding:15px}</style></head><body class="text-center"><main class="form-signin"><form method="post"><h1 class="h3 mb-3 fw-normal">CDN Admin</h1><input type="text" name="username" class="form-control mb-2" placeholder="User" required autofocus><input type="password" name="password" class="form-control mb-3" placeholder="Pass" required><button class="w-100 btn btn-lg btn-primary" type="submit">Sign in</button></form></main></body></html>
     <?php
     exit;
 }
 
-// ================= 3. 业务逻辑处理 (PRG模式) =================
+// ================= 业务逻辑处理 =================
 $message = '';
-$active_tab = $_GET['tab'] ?? 'nodes'; // 默认从 GET 获取 tab
+$active_tab = $_GET['tab'] ?? 'nodes';
 
-// [新增] 读取并清除 Session 中的临时消息
 if (isset($_SESSION['flash_msg'])) {
     $message = $_SESSION['flash_msg'];
     unset($_SESSION['flash_msg']);
@@ -84,10 +70,8 @@ if (isset($_SESSION['flash_msg'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    // 获取提交时的 tab，用于重定向回该页面
     if(isset($_POST['tab'])) $active_tab = $_POST['tab'];
-
-    $temp_msg = ''; // 临时消息
+    $temp_msg = '';
 
     try {
         // --- 域名管理 ---
@@ -111,12 +95,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         elseif ($action === 'del_node') {
             $pdo->prepare("DELETE FROM nodes WHERE id=?")->execute([$_POST['id']]);
-            // 删除操作可选提示
         }
         elseif ($action === 'update_node_config') {
             $id = intval($_POST['id']);
             $traffic_enable = isset($_POST['traffic_limit_enable']) ? 1 : 0;
-            $pdo->prepare("UPDATE nodes SET weight=?, max_bandwidth=?, traffic_limit=?, traffic_limit_enable=?, traffic_count_mode=?, traffic_alert_pct=? WHERE id=?")
+            
+            $pdo->prepare("UPDATE nodes SET 
+                weight=?, 
+                max_bandwidth=?, 
+                traffic_limit=?, 
+                traffic_limit_enable=?, 
+                traffic_count_mode=?, 
+                traffic_alert_pct=? 
+                WHERE id=?")
                 ->execute([
                     intval($_POST['weight'] ?? 0),
                     intval($_POST['max_bandwidth'] ?? 0),
@@ -132,27 +123,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // --- IP 池管理 ---
         elseif ($action === 'save_ips') {
             $raw_ips = preg_split('/[\r\n,]+/', $_POST['cf_ips_list']);
-            $ips = [];
-            foreach ($raw_ips as $ip) {
-                $ip = trim($ip);
-                if (filter_var($ip, FILTER_VALIDATE_IP)) {
-                    $ips[] = $ip;
-                }
-            }
-            $ips = array_unique($ips);
+            $ips = array_filter(array_unique($raw_ips), function($ip){ return filter_var(trim($ip), FILTER_VALIDATE_IP); });
             if(empty($ips)) $ips = ["1.0.0.1"];
-
             $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('cf_ips', ?)")->execute([json_encode(array_values($ips))]);
-            
-            // 同步到 cf_ip_pool 表
-            $stmtInsert = $pdo->prepare("INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES (?)");
-            foreach ($ips as $ip) { $stmtInsert->execute([$ip]); }
-            if (!empty($ips)) {
-                $placeholders = implode(',', array_fill(0, count($ips), '?'));
-                $stmtDel = $pdo->prepare("DELETE FROM cf_ip_pool WHERE ip_address NOT IN ($placeholders)");
-                $stmtDel->execute($ips);
-            }
-            $temp_msg = "<div class='alert alert-success'>IP 池已更新并同步</div>";
+            $pdo->prepare("INSERT IGNORE INTO cf_ip_pool (ip_address) VALUES (?)")->execute([implode("'),('", $ips)]);
+            $temp_msg = "<div class='alert alert-success'>IP 池已更新</div>";
         }
         
         // --- DNS 配置 ---
@@ -163,27 +138,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES (?, ?)")->execute([$k, json_encode(trim($_POST[$k]))]);
                 }
             }
-            $temp_msg = "<div class='alert alert-success'>DNS API 配置已保存</div>";
+            $temp_msg = "<div class='alert alert-success'>DNS 配置已保存</div>";
         }
         
-        // --- 证书管理 ---
+        // --- CA 设置 ---
+        elseif ($action === 'save_cert_config') {
+            $provider = ($_POST['cert_ca_provider'] ?? 'letsencrypt') === 'zerossl' ? 'zerossl' : 'letsencrypt';
+            $email = trim((string)($_POST['cert_ca_email'] ?? ''));
+            $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES (?, ?)")->execute(['cert_ca_provider', json_encode($provider)]);
+            $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES (?, ?)")->execute(['cert_ca_email', json_encode($email)]);
+            $temp_msg = "<div class='alert alert-success'>证书颁发机构设置已保存</div>";
+        }
+
+        // --- 证书操作 ---
         elseif ($action === 'apply_cert') {
             $mode = $_POST['mode'];
             $prov = ($mode=='auto' && get_setting($pdo,'dns_provider','')=='huaweicloud') ? 'huaweicloud' : 'cloudflare';
             $pdo->prepare("INSERT INTO certificates (domain, mode, provider, auto_renew, apply_status, status_msg) VALUES (?, ?, ?, ?, 'processing', '等待处理...')")
                 ->execute([$_POST['domain'], $mode, $prov, isset($_POST['auto_renew'])?1:0]);
-            $temp_msg = "<div class='alert alert-info'>申请已提交</div>";
+            trigger_cert_cron(); 
+            $temp_msg = "<div class='alert alert-info'>申请已提交，后台处理中...</div>";
+        }
+        elseif ($action === 'verify_manual_cert') {
+            $pdo->prepare("UPDATE certificates SET apply_status='verifying', status_msg='等待验证...' WHERE id=?")->execute([$_POST['id']]);
+            trigger_cert_cron(); 
+            $temp_msg = "<div class='alert alert-warning'>验证请求已提交...</div>";
+        }
+        elseif ($action === 'force_renew_cert') {
+            $pdo->prepare("UPDATE certificates SET apply_status='force_renew', status_msg='等待强制续费...' WHERE id=?")->execute([$_POST['id']]);
+            trigger_cert_cron();
+            $temp_msg = "<div class='alert alert-warning'>强制续费请求已提交...</div>";
         }
         elseif ($action === 'del_cert') {
             $pdo->prepare("DELETE FROM certificates WHERE id=?")->execute([$_POST['id']]);
             $temp_msg = "<div class='alert alert-success'>证书已删除</div>";
         }
-        elseif ($action === 'verify_manual_cert') {
-            $pdo->prepare("UPDATE certificates SET apply_status='verifying', status_msg='等待验证...' WHERE id=?")->execute([$_POST['id']]);
-            $temp_msg = "<div class='alert alert-warning'>已提交验证请求</div>";
-        }
         
-        // --- 告警管理 ---
+        // --- 告警 ---
         elseif ($action === 'mark_read') {
             $pdo->prepare("UPDATE node_alerts SET is_read=1 WHERE id=?")->execute([$_POST['id']]);
         }
@@ -197,9 +188,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if(!empty($_POST['admin_user'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_user', ?)")->execute([json_encode($_POST['admin_user'])]);
             if(!empty($_POST['admin_pass'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_pass', ?)")->execute([json_encode($_POST['admin_pass'])]);
             if(!empty($_POST['admin_slug'])) $pdo->prepare("REPLACE INTO settings (key_name, value_json) VALUES ('admin_slug', ?)")->execute([json_encode($_POST['admin_slug'])]);
-            
-            $temp_msg = "<div class='alert alert-success'>系统设置已更新，下次登录请使用新凭据/入口</div>";
-            // 刷新本地变量
+            $temp_msg = "<div class='alert alert-success'>系统设置已更新</div>";
             $CONF_USER = $_POST['admin_user']; $CONF_PASS = $_POST['admin_pass']; $CONF_SLUG = $_POST['admin_slug'];
         }
 
@@ -207,21 +196,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $temp_msg = "<div class='alert alert-danger'>操作失败: " . $e->getMessage() . "</div>";
     }
 
-    // [核心优化] PRG 跳转逻辑
-    // 1. 保存消息到 Session
-    if (!empty($temp_msg)) {
-        $_SESSION['flash_msg'] = $temp_msg;
-    }
-    // 2. 构造重定向 URL
-    // 使用 SCRIPT_NAME 确保获取到真实的 .php 文件路径，避免 Nginx 伪静态导致 URL 参数丢失
-    $redirect_url = $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab;
-    
-    // 3. 执行跳转并终止脚本
-    header("Location: " . $redirect_url);
+    if (!empty($temp_msg)) $_SESSION['flash_msg'] = $temp_msg;
+    header("Location: " . $_SERVER['SCRIPT_NAME'] . "?slug=" . $CONF_SLUG . "&tab=" . $active_tab);
     exit;
 }
 
-// ================= 4. 数据聚合查询 =================
+// ================= 数据查询 =================
 $stats = $pdo->query("SELECT 
     COUNT(*) as total_nodes,
     SUM(CASE WHEN last_heartbeat > unix_timestamp()-65 THEN 1 ELSE 0 END) as online_nodes,
@@ -234,7 +214,7 @@ $stats = $pdo->query("SELECT
 
 $unread_alert_count = $pdo->query("SELECT count(*) FROM node_alerts WHERE is_read=0")->fetchColumn();
 
-// 默认值处理
+// 默认值
 $total_nodes = $stats['total_nodes'] ?: 0;
 $online_nodes = $stats['online_nodes'] ?: 0;
 $offline_nodes = $total_nodes - $online_nodes;
@@ -291,18 +271,18 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
     <?= $message ?>
 
     <ul class="nav nav-tabs mb-3" id="mainTab" role="tablist">
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-nodes" type="button"><i class="bi bi-hdd-network"></i> 监控与节点</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ips" type="button"><i class="bi bi-clouds"></i> 中转网络</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-domains" type="button"><i class="bi bi-globe"></i> 域名管理</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-dns" type="button"><i class="bi bi-gear"></i> DNS 配置</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-cert" type="button"><i class="bi bi-shield-lock"></i> SSL 证书</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-alerts" type="button"><i class="bi bi-bell"></i> 告警中心</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-settings" type="button"><i class="bi bi-gear-wide-connected"></i> 系统设置</button></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='nodes'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=nodes"><i class="bi bi-hdd-network"></i> 监控与节点</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='ips'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=ips"><i class="bi bi-clouds"></i> 中转网络</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='domains'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=domains"><i class="bi bi-globe"></i> 域名管理</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='dns'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=dns"><i class="bi bi-gear"></i> DNS 配置</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='cert'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=cert"><i class="bi bi-shield-lock"></i> SSL 证书</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='alerts'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=alerts"><i class="bi bi-bell"></i> 告警中心</a></li>
+        <li class="nav-item"><a class="nav-link <?= $active_tab=='settings'?'active':'' ?>" href="?slug=<?= $CONF_SLUG ?>&tab=settings"><i class="bi bi-gear-wide-connected"></i> 系统设置</a></li>
     </ul>
 
     <div class="tab-content">
 
-        <div class="tab-pane fade" id="tab-nodes">
+        <div class="tab-pane <?= $active_tab=='nodes'?'active':'fade' ?>" id="tab-nodes">
             <div class="row g-3 mb-4">
                 <div class="col-md-3 col-6"><div class="card p-3 h-100 text-center"><div class="chart-container mb-2"><canvas id="chartNodes"></canvas></div><div class="stat-val"><?= $online_nodes ?> / <?= $total_nodes ?></div><div class="stat-label">可用节点</div></div></div>
                 <div class="col-md-3 col-6"><div class="card p-3 h-100 text-center"><div class="chart-container mb-2"><canvas id="chartCpu"></canvas></div><div class="stat-val"><?= $avg_cpu ?>%</div><div class="stat-label">平均 CPU</div></div></div>
@@ -317,7 +297,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
             <div class="card">
                 <div class="card-body table-responsive p-0">
                     <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light"><tr><th>状态</th><th>节点信息</th><th>实时负载</th><th>流量统计</th><th>策略配置</th><th>操作</th></tr></thead>
+                        <thead class="table-light"><tr><th>状态</th><th>节点信息</th><th>资源负载</th><th>流量统计</th><th width="35%">策略配置</th><th>操作</th></tr></thead>
                         <tbody>
                             <?php
                             $nodes = $pdo->query("SELECT * FROM nodes ORDER BY id DESC")->fetchAll();
@@ -413,7 +393,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
             </div>
         </div>
 
-        <div class="tab-pane fade" id="tab-ips">
+        <div class="tab-pane <?= $active_tab=='ips'?'active':'fade' ?>" id="tab-ips">
             <div class="row">
                 <div class="col-md-5">
                     <div class="card h-100">
@@ -422,10 +402,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                             <form method="post">
                                 <input type="hidden" name="tab" value="ips">
                                 <input type="hidden" name="action" value="save_ips">
-                                <div class="mb-3">
-                                    <label class="form-label">Cloudflare 优选 IP 列表</label>
-                                    <textarea name="cf_ips_list" class="form-control font-monospace" rows="12"><?= implode("\n", get_setting($pdo,'cf_ips',["1.0.0.1"])) ?></textarea>
-                                </div>
+                                <div class="mb-3"><label class="form-label">Cloudflare 优选 IP 列表</label><textarea name="cf_ips_list" class="form-control font-monospace" rows="12"><?= implode("\n", get_setting($pdo,'cf_ips',["1.0.0.1"])) ?></textarea></div>
                                 <button class="btn btn-primary w-100"><i class="bi bi-save"></i> 保存并同步</button>
                             </form>
                         </div>
@@ -458,7 +435,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
             </div>
         </div>
 
-        <div class="tab-pane fade" id="tab-domains">
+        <div class="tab-pane <?= $active_tab=='domains'?'active':'fade' ?>" id="tab-domains">
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <span>域名白名单</span>
@@ -486,7 +463,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
             </div>
         </div>
 
-        <div class="tab-pane fade" id="tab-dns">
+        <div class="tab-pane <?= $active_tab=='dns'?'active':'fade' ?>" id="tab-dns">
             <div class="card border-warning">
                 <div class="card-header bg-warning-subtle text-dark"><i class="bi bi-gear-fill"></i> 智能 DNS 调度接口配置</div>
                 <div class="card-body">
@@ -513,17 +490,47 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                             <div class="col-md-3"><label class="form-label">Zone ID</label><input type="text" name="hw_zone_id" class="form-control" value="<?= htmlspecialchars(get_setting($pdo,'hw_zone_id','')) ?>"></div>
                             <div class="col-md-3"><label class="form-label">Region</label><input type="text" name="hw_region" class="form-control" value="<?= htmlspecialchars(get_setting($pdo,'hw_region','ap-southeast-1')) ?>"></div>
                         </div>
-                        <div class="mb-3 mt-4">
-                            <label class="form-label fw-bold">调度记录名称 (RR)</label>
-                            <div class="input-group w-50"><input type="text" name="cf_record_name" class="form-control" value="<?= htmlspecialchars(get_setting($pdo,'cf_record_name','cdn')) ?>"><span class="input-group-text">.yourdomain.com</span></div>
-                        </div>
+<div class="mb-3 mt-4">
+    <label class="form-label fw-bold">调度域名 (完整域名)</label>
+    <div class="input-group w-50">
+        <span class="input-group-text">FQDN</span>
+        <input type="text" name="cf_record_name" class="form-control" value="<?= htmlspecialchars(get_setting($pdo,'cf_record_name','cdn.example.com')) ?>" placeholder="例如: cdn.yourdomain.com">
+    </div>
+    <div class="form-text">请务必填写完整的用于调度的域名，例如 <code>cdn.kalaimg.top</code></div>
+</div>
                         <button class="btn btn-warning"><i class="bi bi-save"></i> 保存接口配置</button>
                     </form>
                 </div>
             </div>
         </div>
 
-        <div class="tab-pane fade" id="tab-cert">
+        <div class="tab-pane <?= $active_tab=='cert'?'active':'fade' ?>" id="tab-cert">
+            
+            <div class="card mb-3 border-info">
+                <div class="card-header bg-info-subtle"><i class="bi bi-sliders"></i> 证书颁发机构 (CA) 设置</div>
+                <div class="card-body">
+                    <form method="post" class="row g-3 align-items-end">
+                        <input type="hidden" name="tab" value="cert">
+                        <input type="hidden" name="action" value="save_cert_config">
+                        <div class="col-md-4">
+                            <label class="form-label">CA 提供商</label>
+                            <select name="cert_ca_provider" class="form-select">
+                                <option value="letsencrypt" <?= get_setting($pdo,'cert_ca_provider','letsencrypt')==='letsencrypt'?'selected':'' ?>>Let's Encrypt (默认/无需账户)</option>
+                                <option value="zerossl" <?= get_setting($pdo,'cert_ca_provider','letsencrypt')==='zerossl'?'selected':'' ?>>ZeroSSL (需邮箱)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label">账号邮箱 (ZeroSSL 必填)</label>
+                            <input type="email" name="cert_ca_email" class="form-control" value="<?= htmlspecialchars(get_setting($pdo,'cert_ca_email','')) ?>" placeholder="email@example.com">
+                        </div>
+                        <div class="col-md-3">
+                            <button class="btn btn-info w-100">保存设置</button>
+                        </div>
+                        <div class="col-12"><small class="text-muted">注意：ZeroSSL 必须提供有效邮箱进行注册。Let's Encrypt 默认无需邮箱。修改后对新申请生效。</small></div>
+                    </form>
+                </div>
+            </div>
+
             <div class="card">
                 <div class="card-header d-flex justify-content-between">
                     <span>SSL 证书自动化</span>
@@ -531,15 +538,17 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                 </div>
                 <div class="card-body">
                     <table class="table align-middle">
-                        <thead><tr><th>域名</th><th>状态</th><th>验证模式</th><th>操作</th></tr></thead>
+                        <thead><tr><th>域名</th><th>状态</th><th>到期时间</th><th>下次续签</th><th>验证模式</th><th>操作</th></tr></thead>
                         <tbody>
-                            <?php foreach($pdo->query("SELECT * FROM certificates ORDER BY id DESC")->fetchAll() as $c): ?>
+                            <?php foreach($pdo->query("SELECT * FROM certificates ORDER BY id DESC")->fetchAll() as $c): 
+                                $exp = (int)$c['expire_time'];
+                                $renewDate = $c['auto_renew'] ? date('Y-m-d', $exp - 10 * 86400) : '<span class="text-muted">手动</span>';
+                            ?>
                             <tr>
                                 <td><strong><?= htmlspecialchars($c['domain']) ?></strong><br><small class="text-muted"><?= $c['status_msg'] ?></small></td>
                                 <td>
                                     <?php if($c['status'] == 1): ?>
                                         <span class="badge bg-success">已签发</span>
-                                        <div class="small text-muted">过期: <?= date('Y-m-d', $c['expire_time']) ?></div>
                                     <?php elseif($c['apply_status']=='wait_verify'): ?>
                                         <div class="alert alert-warning p-2 mb-0 small border-warning">
                                             <strong>TXT 记录:</strong><br>
@@ -554,12 +563,20 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                                         <span class="badge bg-secondary"><?= $c['apply_status'] ?></span>
                                     <?php endif; ?>
                                 </td>
+                                <td><?= $exp > 0 ? date('Y-m-d', $exp) : '-' ?></td>
+                                <td><?= $renewDate ?></td>
                                 <td><?= $c['mode']=='auto'?'API 自动':'手动 DNS' ?></td>
                                 <td>
-                                    <form method="post" onsubmit="return confirm('删?');">
-                                        <input type="hidden" name="tab" value="cert"><input type="hidden" name="action" value="del_cert"><input type="hidden" name="id" value="<?= $c['id'] ?>">
-                                        <button class="btn btn-sm btn-danger">删除</button>
-                                    </form>
+                                    <div class="btn-group btn-group-sm">
+                                        <form method="post" class="d-inline">
+                                            <input type="hidden" name="tab" value="cert"><input type="hidden" name="action" value="force_renew_cert"><input type="hidden" name="id" value="<?= $c['id'] ?>">
+                                            <button class="btn btn-outline-primary" onclick="return confirm('确定强制重签吗？')">续费</button>
+                                        </form>
+                                        <form method="post" class="d-inline">
+                                            <input type="hidden" name="tab" value="cert"><input type="hidden" name="action" value="del_cert"><input type="hidden" name="id" value="<?= $c['id'] ?>">
+                                            <button class="btn btn-outline-danger" onclick="return confirm('删?');">删除</button>
+                                        </form>
+                                    </div>
                                 </td>
                             </tr>
                             <?php endforeach; ?>
@@ -569,7 +586,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
             </div>
         </div>
 
-        <div class="tab-pane fade" id="tab-alerts">
+        <div class="tab-pane <?= $active_tab=='alerts'?'active':'fade' ?>" id="tab-alerts">
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center bg-danger bg-opacity-10 text-danger">
                     <span>⚠️ 系统告警记录</span>
@@ -607,7 +624,7 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
             </div>
         </div>
 
-        <div class="tab-pane fade" id="tab-settings">
+        <div class="tab-pane <?= $active_tab=='settings'?'active':'fade' ?>" id="tab-settings">
             <div class="card" style="max-width:500px; margin:0 auto">
                 <div class="card-header"><i class="bi bi-gear-wide-connected"></i> 系统安全设置</div>
                 <div class="card-body">
@@ -647,9 +664,28 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
 <script>
 document.addEventListener("DOMContentLoaded", function() {
     var activeTab = '<?= $active_tab ?>'; 
-    var triggerEl = document.querySelector('button[data-bs-target="#tab-' + activeTab + '"]');
+    var triggerEl = document.querySelector('a[href*="tab=' + activeTab + '"]');
     if (triggerEl) { (new bootstrap.Tab(triggerEl)).show(); }
     
+    // [新增] 自动刷新逻辑 (只刷新列表内容)
+    if(activeTab === 'cert' || activeTab === 'nodes') {
+        setInterval(() => {
+            fetch(window.location.href)
+            .then(r => r.text())
+            .then(html => {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                if(activeTab === 'cert') {
+                    const newBody = doc.querySelector('#tab-cert tbody');
+                    if(newBody) document.querySelector('#tab-cert tbody').innerHTML = newBody.innerHTML;
+                } else if(activeTab === 'nodes') {
+                    const newBody = doc.querySelector('#tab-nodes tbody');
+                    if(newBody) document.querySelector('#tab-nodes tbody').innerHTML = newBody.innerHTML;
+                }
+            });
+        }, 3000); // 3秒刷新
+    }
+
     var dnsSelect = document.querySelector('select[name="dns_provider"]');
     if(dnsSelect) toggleDns(dnsSelect.value);
 
