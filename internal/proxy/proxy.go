@@ -1,185 +1,82 @@
 package proxy
 
 import (
-	"context"
 	"crypto/tls"
-	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
-
-	"github.com/example/cf-proxy/internal/config"
 )
 
-type contextKey string
-
-const sniContextKey contextKey = "upstream_sni"
-
-type countingResponseWriter struct {
-	http.ResponseWriter
-	down *atomic.Uint64
-}
-
-func (w *countingResponseWriter) Write(b []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(b)
-	if n > 0 {
-		w.down.Add(uint64(n))
+// NewReverseProxy 创建一个反向代理
+func NewReverseProxy(target string, host string) (*httputil.ReverseProxy, error) {
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return nil, err
 	}
-	return n, err
-}
 
-type Engine struct {
-	manager *config.Manager
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
-	rr atomic.Uint64
+	// 自定义 Director 修改请求
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		
+		// 1. 强制设置 Host 头 (这是回源的关键，Cloudflare 依靠这个识别域名)
+		req.Host = host
+		req.URL.Host = targetURL.Host
+		req.URL.Scheme = targetURL.Scheme
 
-	transport http.RoundTripper
+		// 2. [核心修复] 透传真实客户端 IP
+		// 获取客户端 IP (去除端口号)
+		clientIP, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err == nil {
+			// 设置 X-Real-IP (很多源站 Nginx 依赖这个)
+			req.Header.Set("X-Real-IP", clientIP)
 
-	upTraffic   atomic.Uint64
-	downTraffic atomic.Uint64
-}
+			// 设置 X-Forwarded-For (追加模式)
+			// 格式: ClientIP, Proxy1, Proxy2...
+			prior := req.Header.Get("X-Forwarded-For")
+			if prior != "" {
+				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+			} else {
+				req.Header.Set("X-Forwarded-For", clientIP)
+			}
+		}
 
-func New(manager *config.Manager) *Engine {
-	base := &http.Transport{
+		// 3. 伪装 User-Agent (可选，防止被某些简单的反爬策略拦截)
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Compatible; CF-Proxy/1.0)")
+		}
+	}
+
+	// 自定义 Transport 处理 SSL/TLS
+	proxy.Transport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
+			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			serverName, _ := ctx.Value(sniContextKey).(string)
-			if serverName == "" {
-				return nil, fmt.Errorf("missing SNI in context")
-			}
-
-			d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-			raw, err := d.DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-
-			tlsConn := tls.Client(raw, &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12})
-			if err := tlsConn.HandshakeContext(ctx); err != nil {
-				_ = raw.Close()
-				return nil, err
-			}
-			return tlsConn, nil
-		},
-		MaxIdleConns:        2048,
-		MaxIdleConnsPerHost: 512,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 5 * time.Second,
-		ForceAttemptHTTP2:   true,
-	}
-
-	return &Engine{manager: manager, transport: &transportWithSNI{base: base}}
-}
-
-type transportWithSNI struct{ base *http.Transport }
-
-func (t *transportWithSNI) RoundTrip(req *http.Request) (*http.Response, error) {
-	cloned := req.Clone(context.WithValue(req.Context(), sniContextKey, normalizeHost(req.Host)))
-	return t.base.RoundTrip(cloned)
-}
-
-func (e *Engine) Handler() http.Handler {
-	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			host := normalizeHost(req.Host)
-			cfIP := e.nextCFIP()
-
-			e.upTraffic.Add(estimateRequestBytes(req))
-
-			req.URL = &url.URL{Scheme: "https", Host: net.JoinHostPort(cfIP, "443"), Path: req.URL.Path, RawPath: req.URL.RawPath, RawQuery: req.URL.RawQuery}
-			req.Host = host
-			req.Header.Set("Host", host)
-			req.Header.Set("X-Forwarded-Host", host)
-			clientIP := clientIP(req.RemoteAddr)
-			req.Header.Set("X-Real-IP", clientIP)
-			req.Header.Set("X-Forwarded-For", clientIP)
-			if req.TLS != nil {
-				req.Header.Set("X-Forwarded-Proto", "https")
-			} else {
-				req.Header.Set("X-Forwarded-Proto", "http")
-			}
-			log.Printf("[Proxy] host=%s cf_ip=%s remote=%s", host, cfIP, req.RemoteAddr)
-		},
-		Transport: e.transport,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("[Error] host=%s remote=%s err=%v", r.Host, r.RemoteAddr, err)
-			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			// 关键：Cloudflare 的 IP 证书是通用的，必须跳过主机名校验或设为 ServerName
+			InsecureSkipVerify: true, 
+			ServerName:         host, 
 		},
 	}
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := normalizeHost(r.Host)
-		if !e.isAllowed(host) {
-			log.Printf("[Block] host=%s remote=%s", host, r.RemoteAddr)
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte("Access Denied"))
-			return
-		}
-		cw := &countingResponseWriter{ResponseWriter: w, down: &e.downTraffic}
-		rp.ServeHTTP(cw, r)
-	})
-}
-
-func (e *Engine) ConsumeTraffic() (up uint64, down uint64) {
-	up = e.upTraffic.Swap(0)
-	down = e.downTraffic.Swap(0)
-	return
-}
-
-func (e *Engine) isAllowed(host string) bool {
-	s := e.manager.Snapshot()
-	_, ok := s.Whitelist[host]
-	return ok
-}
-
-func (e *Engine) nextCFIP() string {
-	s := e.manager.Snapshot()
-	if len(s.CFIPs) == 0 {
-		return "1.1.1.1"
+	// 错误处理
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		// Log error here if needed
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("502 Bad Gateway (Edge Proxy Error)"))
 	}
-	idx := e.rr.Add(1)
-	return s.CFIPs[idx%uint64(len(s.CFIPs))]
-}
 
-func normalizeHost(raw string) string {
-	host, _, err := net.SplitHostPort(raw)
-	if err == nil {
-		return strings.ToLower(host)
-	}
-	return strings.ToLower(raw)
-}
-
-func clientIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return remoteAddr
-	}
-	return host
-}
-
-func estimateRequestBytes(req *http.Request) uint64 {
-	sz := uint64(len(req.Method) + len(req.Proto) + len(req.URL.Path) + len(req.URL.RawQuery))
-	for k, vals := range req.Header {
-		sz += uint64(len(k))
-		for _, v := range vals {
-			sz += uint64(len(v))
-		}
-	}
-	if req.ContentLength > 0 {
-		sz += uint64(req.ContentLength)
-	}
-	return sz
-}
-
-func HTTPAddr(port int) string {
-	return fmt.Sprintf(":%d", port)
+	return proxy, nil
 }
