@@ -62,7 +62,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     status tinyint DEFAULT 1, last_heartbeat int DEFAULT 0, cpu_usage float DEFAULT 0, 
     ram_usage float DEFAULT 0, traffic_limit int DEFAULT 0, traffic_used bigint DEFAULT 0, 
     weight int DEFAULT 100, max_bandwidth int DEFAULT 0, current_bandwidth int DEFAULT 0,
-    max_ram int DEFAULT 0 COMMENT '内存上限MB'
+    max_ram int DEFAULT 0 COMMENT '内存上限MB',
+    traffic_limit int DEFAULT 0 COMMENT '流量限制(GB)',
+    traffic_limit_enable tinyint DEFAULT 0 COMMENT '流量限制开关',
+    traffic_count_mode tinyint DEFAULT 0 COMMENT '0双向 1单向',
+    traffic_alert_pct int DEFAULT 5 COMMENT '剩余流量暂停阈值%'
 );
 CREATE TABLE IF NOT EXISTS node_alerts (id int AUTO_INCREMENT PRIMARY KEY, node_id int, node_name varchar(100), type varchar(20), value varchar(50), message text, is_read tinyint DEFAULT 0, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS domains (id int AUTO_INCREMENT PRIMARY KEY, domain varchar(255) UNIQUE, created_at timestamp DEFAULT CURRENT_TIMESTAMP);
