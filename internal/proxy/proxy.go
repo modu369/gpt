@@ -36,16 +36,13 @@ func (w *countingResponseWriter) Write(b []byte) (int, error) {
 
 type Engine struct {
 	manager *config.Manager
-
-	rr atomic.Uint64
-
-	transport http.RoundTripper
-
+	rr          atomic.Uint64
+	transport   http.RoundTripper
 	upTraffic   atomic.Uint64
 	downTraffic atomic.Uint64
 }
 
-// New 创建代理引擎，保留原系统的 Transport 配置和动态 SNI 处理逻辑
+// New 创建代理引擎
 func New(manager *config.Manager) *Engine {
 	base := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -65,11 +62,11 @@ func New(manager *config.Manager) *Engine {
 				return nil, err
 			}
 
-			// 企业版穿透建议维持 TLS 1.2+ 握手
+			// 跳过证书校验，因为我们是直连 Cloudflare 边缘 IP
 			tlsConn := tls.Client(raw, &tls.Config{
 				ServerName:         serverName,
 				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: true, // 必须跳过以支持直连 CF 边缘 IP
+				InsecureSkipVerify: true, 
 			})
 			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				_ = raw.Close()
@@ -94,7 +91,7 @@ func (t *transportWithSNI) RoundTrip(req *http.Request) (*http.Response, error) 
 	return t.base.RoundTrip(cloned)
 }
 
-// Handler 处理请求，集成 True-Client-IP 穿透逻辑
+// Handler 处理请求
 func (e *Engine) Handler() http.Handler {
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -104,7 +101,7 @@ func (e *Engine) Handler() http.Handler {
 			// 统计上行流量
 			e.upTraffic.Add(estimateRequestBytes(req))
 
-			// 设置转发目标为 Cloudflare 边缘节点
+			// 设置转发目标
 			req.URL = &url.URL{
 				Scheme:   "https",
 				Host:     net.JoinHostPort(cfIP, "443"),
@@ -120,12 +117,14 @@ func (e *Engine) Handler() http.Handler {
 			clientIP := clientIP(req.RemoteAddr)
 
 			// ==========================================
-			// [新增] Cloudflare Enterprise 企业版穿透核心头部
+			// [Pro版本配置] 仅保留标准透传头
 			// ==========================================
-			req.Header.Set("True-Client-IP", clientIP) 
 			
-			// 维持标准的 Real-IP 和 Forwarded-For 透传
+			// 1. 设置 X-Real-IP (供源站参考)
 			req.Header.Set("X-Real-IP", clientIP)
+			
+			// 2. 追加 X-Forwarded-For (Cloudflare WAF 识别的关键)
+			// 格式: ClientIP, ProxyIP (Cloudflare 会自动再追加一次)
 			prior := req.Header.Get("X-Forwarded-For")
 			if prior != "" {
 				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
@@ -133,11 +132,13 @@ func (e *Engine) Handler() http.Handler {
 				req.Header.Set("X-Forwarded-For", clientIP)
 			}
 
+			// 3. 协议透传
 			if req.TLS != nil {
 				req.Header.Set("X-Forwarded-Proto", "https")
 			} else {
 				req.Header.Set("X-Forwarded-Proto", "http")
 			}
+			
 			log.Printf("[Proxy] host=%s cf_ip=%s remote=%s", host, cfIP, req.RemoteAddr)
 		},
 		Transport: e.transport,
@@ -149,20 +150,18 @@ func (e *Engine) Handler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := normalizeHost(r.Host)
-		// 域名白名单验证
 		if !e.isAllowed(host) {
 			log.Printf("[Block] host=%s remote=%s", host, r.RemoteAddr)
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte("Access Denied"))
 			return
 		}
-		// 包装 Writer 以统计下行流量
 		cw := &countingResponseWriter{ResponseWriter: w, down: &e.downTraffic}
 		rp.ServeHTTP(cw, r)
 	})
 }
 
-// ConsumeTraffic 原子交换并获取流量统计，供 main.go 的心跳使用
+// ConsumeTraffic 流量统计
 func (e *Engine) ConsumeTraffic() (up uint64, down uint64) {
 	up = e.upTraffic.Swap(0)
 	down = e.downTraffic.Swap(0)
