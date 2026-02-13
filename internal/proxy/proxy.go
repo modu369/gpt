@@ -117,6 +117,7 @@ func (e *Engine) Handler() http.Handler {
 			req.Header.Set("X-Forwarded-Host", host)
 
 			// 2. [核心修复] 透传真实客户端 IP
+			// 即使没有 User-Agent，IP 也要透传，否则源站无法风控
 			clientIP := clientIP(req.RemoteAddr)
 			req.Header.Set("X-Real-IP", clientIP)
 			
@@ -128,10 +129,9 @@ func (e *Engine) Handler() http.Handler {
 				req.Header.Set("X-Forwarded-For", clientIP)
 			}
 
-			// 3. 伪装 User-Agent
-			if req.Header.Get("User-Agent") == "" {
-				req.Header.Set("User-Agent", "Mozilla/5.0 (Compatible; CF-Proxy/1.0)")
-			}
+			// 3. 原封不动转发 User-Agent (已移除伪装逻辑)
+			// Go 的 ReverseProxy 默认会保留客户端原始 Header
+			// 如果客户端没发 UA，这里也不会发，完全透明。
 
 			// 4. 设置协议头
 			if req.TLS != nil {
