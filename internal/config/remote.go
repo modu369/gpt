@@ -44,6 +44,7 @@ type HeartbeatPayload struct {
 	TrafficDown uint64  `json:"traffic_down"`
 	MaxBW       int     `json:"max_bw"`
 	MaxRAM      int     `json:"max_ram"`
+	CPUCores    int     `json:"cpu_cores"`
 }
 
 type APIClient struct {
