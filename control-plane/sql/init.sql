@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS `nodes` (
   `traffic_limit_enable` tinyint DEFAULT 0 COMMENT '流量限制开关',
   `traffic_count_mode` tinyint DEFAULT 0 COMMENT '0双向 1单向',
   `traffic_alert_pct` int DEFAULT 5 COMMENT '剩余流量暂停阈值%',
+  `cpu_cores` int(11) DEFAULT 0 COMMENT 'CPU核心数',
   PRIMARY KEY (`id`),
   UNIQUE KEY `secret_key` (`secret_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
