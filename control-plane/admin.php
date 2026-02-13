@@ -1,8 +1,8 @@
 <?php
 /**
- * admin.php - 旗舰版 V6.1 (完整无缺漏版)
+ * admin.php - 旗舰版 V6.2 (UI 增强版)
  * * 包含功能：
- * 1. 节点管理：流量限制、自动暂停、硬件自动发现。
+ * 1. 节点管理：显示 CPU 核心数、最大带宽上限。
  * 2. SSL证书：支持 Let's Encrypt/ZeroSSL 切换，强制续费。
  * 3. 完整模块：IP池、域名、DNS配置、告警中心、系统设置。
  * 4. 体验优化：自动刷新、PRG防重提交。
@@ -322,7 +322,10 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                                     <button class="btn btn-sm btn-link p-0 small" onclick="copyCmd('<?= $cmd ?>')">📋 复制安装命令</button>
                                 </td>
                                 <td>
-                                    <div class="small">CPU: <span class="<?= $node['cpu_usage']>80?'text-danger':'' ?>"><?= $node['cpu_usage'] ?>%</span></div>
+                                    <div class="small">
+                                        CPU: <span class="<?= $node['cpu_usage']>80?'text-danger':'' ?>"><?= $node['cpu_usage'] ?>%</span> 
+                                        <span class="text-muted">/ <?= $node['cpu_cores'] ?: '?' ?> C</span>
+                                    </div>
                                     <div class="small">RAM: <?= $node['ram_usage'] ?> / <?= $node['max_ram'] ?: '?' ?> MB</div>
                                 </td>
                                 <td>
@@ -335,7 +338,10 @@ $master_url = $protocol . $_SERVER['HTTP_HOST'];
                                     <?php else: ?>
                                         <small class="text-muted">无限制</small>
                                     <?php endif; ?>
-                                    <div class="small text-muted">带宽: <?= $node['current_bandwidth'] ?> Mbps</div>
+                                    <div class="small text-muted">
+                                        带宽: <?= $node['current_bandwidth'] ?> 
+                                        <span class="text-muted">/ <?= $node['max_bandwidth'] ?: '?' ?> Mbps</span>
+                                    </div>
                                 </td>
                                 <td style="min-width: 360px;">
                                     <form method="post" class="row g-2 align-items-center">
