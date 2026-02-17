@@ -1,0 +1,16 @@
+{
+  "_deprecated": "Phase-3 no longer reads local config.json. Use -master and -secret flags.",
+  "whitelist": [
+    "test.yourdomain.com",
+    "cdn.example.com"
+  ],
+  "cf_ips": [
+    "104.16.123.96",
+    "172.64.80.1",
+    "162.159.128.1"
+  ],
+  "http_port": 80,
+  "https_port": 443,
+  "tls_cert_file": "cert.pem",
+  "tls_key_file": "key.pem"
+}
